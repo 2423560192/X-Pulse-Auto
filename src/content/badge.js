@@ -7,10 +7,10 @@ function createBadge({ state, presentation, tooltip, el }) {
     badge.dataset.xpHandle = user.handle;
     badge.tabIndex = 0;
     badge.setAttribute('role', 'note');
-    badge.setAttribute('aria-label', '@' + user.handle + '，' + presentation.format(user.count, 'exact') + ' 位粉丝');
+    badge.setAttribute('aria-label', '@' + user.handle + '，' + presentation.format(user.followers, 'exact') + ' 位粉丝');
     badge.setAttribute('aria-describedby', 'xp-inline-tip');
-    const main = el('span', 'xp-count' + (state.settings.tierColors ? ' xp-tier-' + presentation.tier(user.count) : ''));
-    main.append(el('span', 'xp-people'), document.createTextNode(presentation.format(user.count, state.settings.format)), el('span', 'xp-unit', '粉丝'));
+    const main = el('span', 'xp-count' + (state.settings.tierColors ? ' xp-tier-' + presentation.tier(user.followers) : ''));
+    main.append(el('span', 'xp-people'), document.createTextNode(presentation.format(user.followers, state.settings.format)), el('span', 'xp-unit', '粉丝'));
     badge.append(main);
     const rel = presentation.relation(user);
     if (state.settings.showRelation && !compact && rel) badge.append(el('span', 'xp-relation', rel));

@@ -6,14 +6,14 @@ const core = require('./core.js');
 const { settings } = require('./settings.js');
 
 function sanitize(u, at, now = Date.now()) {
-  const base = core.validateSample({ ...u, at }, now);
+  const base = core.validateSample({ ...u, observedAt: at }, now);
   if (!base) return null;
   const num = v => Number.isSafeInteger(v) && v >= 0 ? v : null;
   return {
     ...base,
     following: num(u.following),
     posts: num(u.posts),
-    createdAt: typeof u.createdAt === 'string' ? u.createdAt.slice(0,64) : '',
+    createdAt: typeof u.createdAt === 'string' ? u.createdAt.slice(0, 64) : '',
     followsYou: typeof u.followsYou === 'boolean' ? u.followsYou : null,
     youFollow: typeof u.youFollow === 'boolean' ? u.youFollow : null
   };
@@ -26,7 +26,7 @@ function accept(cache, batch, at, now = Date.now()) {
     const u = sanitize(raw, at, now);
     if (!u) continue;
     const old = cache.get(u.handle);
-    if (old && old.at >= u.at) continue;
+    if (old && old.observedAt >= u.observedAt) continue;
     cache.delete(u.handle);
     cache.set(u.handle, u);
     changed++;
@@ -36,7 +36,7 @@ function accept(cache, batch, at, now = Date.now()) {
 }
 
 function signature(u, s, compact) {
-  return JSON.stringify([u.handle, u.count, u.following, u.posts, u.followsYou, u.youFollow, settings(s), !!compact]);
+  return JSON.stringify([u.handle, u.followers, u.following, u.posts, u.followsYou, u.youFollow, settings(s), !!compact]);
 }
 
 module.exports = { sanitize, accept, signature };

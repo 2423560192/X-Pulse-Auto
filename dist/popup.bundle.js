@@ -4,33 +4,61 @@
 const __modules = {
 "popup/index": function(require, module, exports) {
 'use strict';
-// Settings panel: renders controls, persists changes, and polls the active tab's status.
+// Settings panel: renders controls, persists changes, polls the active tab,
+// and exports favorites to CSV / JSON.
 
 const version = require('../version.js');
-const settingsApi = require('../shared/settings.js');
+const config = require('../shared/config.js');
+const favorites = require('../shared/favorites.js');
+const exporter = require('../shared/exporter.js');
 
 const KEY = 'xp_inline_settings';
-let cfg = settingsApi.settings();
+let cfg = config.config();
 const error = document.getElementById('error');
+
+function inputValue(input) {
+  if (input.type === 'checkbox') return input.checked;
+  if (input.type === 'number') return Number(input.value);
+  return input.value;
+}
+
+function getPath(obj, path) { return path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj); }
+function setPath(obj, path, value) {
+  const keys = path.split('.');
+  const last = keys.pop();
+  const target = keys.reduce((o, k) => (o[k] = o[k] || {}), obj);
+  target[last] = value;
+}
 
 function paint() {
   for (const input of document.querySelectorAll('[data-key]')) {
     if (input.type === 'checkbox') input.checked = cfg[input.dataset.key];
     else input.value = cfg[input.dataset.key];
   }
+  for (const input of document.querySelectorAll('[data-path]')) {
+    const v = getPath(cfg, input.dataset.path);
+    if (input.type === 'checkbox') input.checked = !!v;
+    else if (Array.isArray(v)) input.value = v.join(', ');
+    else input.value = v;
+  }
   document.getElementById('status').textContent = cfg.enabled ? '自动显示已开启' : '自动显示已暂停';
 }
 
 chrome.storage.local.get(KEY).then(data => {
-  cfg = settingsApi.settings(data[KEY]);
+  cfg = config.config(data[KEY]);
   paint();
 }).catch(e => { error.textContent = e.message; });
 
 document.addEventListener('change', async e => {
   const input = e.target;
-  if (!input.dataset.key) return;
-  cfg[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.value;
-  cfg = settingsApi.settings(cfg);
+  if (input.dataset.key) cfg[input.dataset.key] = inputValue(input);
+  else if (input.dataset.path) {
+    let v = inputValue(input);
+    if (Array.isArray(getPath(cfg, input.dataset.path))) v = String(v).split(',').map(s => s.trim()).filter(Boolean);
+    setPath(cfg, input.dataset.path, v);
+  }
+  else return;
+  cfg = config.config(cfg);
   try {
     await chrome.storage.local.set({ [KEY]: cfg });
     error.textContent = '';
@@ -56,6 +84,78 @@ async function diagnostics() {
   }
 }
 
+async function exportFavorites(kind) {
+  try {
+    const list = await favorites.listFavorites();
+    if (!list.length) { error.textContent = '暂无收藏数据可导出'; return; }
+    if (kind === 'csv') exporter.downloadFile(exporter.exportFavoritesCSV(list), 'x-pulse-favorites.csv', 'text/csv;charset=utf-8');
+    else exporter.downloadFile(exporter.exportFavoritesJSON(list), 'x-pulse-favorites.json', 'application/json');
+    error.textContent = '';
+  } catch (e) { error.textContent = '导出失败：' + e.message; }
+}
+
+document.getElementById('export-csv').addEventListener('click', () => exportFavorites('csv'));
+document.getElementById('export-json').addEventListener('click', () => exportFavorites('json'));
+
+let favList = [];
+
+async function refreshFavorites() {
+  try {
+    const all = await favorites.listFavorites();
+    favList = favorites.sortFavorites(all, 'recent');
+    renderFavorites();
+  } catch (e) { error.textContent = '加载收藏失败：' + e.message; }
+}
+
+function renderFavorites() {
+  const listEl = document.getElementById('fav-list');
+  const q = document.getElementById('fav-search').value;
+  const items = favorites.searchFavorites(favList, q);
+  listEl.replaceChildren();
+  if (!items.length) {
+    const li = document.createElement('li');
+    li.className = 'fav-empty';
+    li.textContent = q ? '无匹配收藏' : '暂无收藏';
+    listEl.append(li);
+    return;
+  }
+  for (const f of items) {
+    const li = document.createElement('li');
+    li.className = 'fav-item';
+    const name = document.createElement('div');
+    name.className = 'fav-name';
+    name.textContent = (f.name || f.handle) + ' @' + f.handle;
+    li.append(name);
+    if (f.note) { const n = document.createElement('div'); n.className = 'fav-note'; n.textContent = f.note; li.append(n); }
+    if (f.tags && f.tags.length) { const t = document.createElement('div'); t.className = 'fav-tags'; t.textContent = f.tags.join(' · '); li.append(t); }
+    const actions = document.createElement('div');
+    actions.className = 'fav-actions';
+    const noteBtn = document.createElement('button'); noteBtn.type = 'button'; noteBtn.textContent = '备注';
+    noteBtn.addEventListener('click', () => editNote(f));
+    const delBtn = document.createElement('button'); delBtn.type = 'button'; delBtn.textContent = '删除';
+    delBtn.addEventListener('click', () => removeFavorite(f));
+    actions.append(noteBtn, delBtn);
+    li.append(actions);
+    listEl.append(li);
+  }
+}
+
+async function editNote(f) {
+  const note = prompt('备注', f.note || '');
+  if (note === null) return;
+  try { await favorites.client.update(f.key, { note }); await refreshFavorites(); error.textContent = ''; }
+  catch (e) { error.textContent = '保存备注失败：' + e.message; }
+}
+
+async function removeFavorite(f) {
+  if (!confirm('删除 @' + f.handle + ' 的收藏？')) return;
+  try { await favorites.client.remove(f.key); await refreshFavorites(); error.textContent = ''; }
+  catch (e) { error.textContent = '删除失败：' + e.message; }
+}
+
+document.getElementById('fav-search').addEventListener('input', renderFavorites);
+refreshFavorites();
+
 diagnostics();
 setInterval(diagnostics, 1500);
 
@@ -64,7 +164,82 @@ setInterval(diagnostics, 1500);
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '1.1.1';
+module.exports = '2.0.0';
+
+},
+"shared/config": function(require, module, exports) {
+'use strict';
+// V2 settings: legacy flat fields + nested groups, with type validation,
+// clamping, keyword normalization, and old->new field migration.
+
+const legacy = require('./settings.js');
+
+const DEFAULTS = {
+  schemaVersion: 2,
+  account: { showFollowers: true, showRatio: true, showAge: true, showTier: true },
+  post: { enabled: true, showEngagementRate: true, highlightHighEngagement: false, rateThreshold: 2, minViews: 1000 },
+  filters: { enabled: false, mode: 'highlight', includeKeywords: [], excludeKeywords: [] },
+  favorites: { enabled: true }
+};
+
+const MAX_KEYWORDS = 200;
+const MAX_KEYWORD_LENGTH = 60;
+
+function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
+function number(value, fallback, min, max) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+function oneOf(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
+function keywords(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const k = item.trim().slice(0, MAX_KEYWORD_LENGTH);
+    if (k && !out.includes(k)) out.push(k);
+    if (out.length >= MAX_KEYWORDS) break;
+  }
+  return out;
+}
+
+function config(input = {}) {
+  const flat = legacy.settings(input); // legacy flat fields keep working unchanged
+
+  const account = { ...DEFAULTS.account };
+  const post = { ...DEFAULTS.post };
+  const filters = { ...DEFAULTS.filters };
+  const favorites = { ...DEFAULTS.favorites };
+
+  if (input && typeof input === 'object') {
+    if (input.account && typeof input.account === 'object') {
+      account.showFollowers = bool(input.account.showFollowers, account.showFollowers);
+      account.showRatio = bool(input.account.showRatio, account.showRatio);
+      account.showAge = bool(input.account.showAge, account.showAge);
+      account.showTier = bool(input.account.showTier, account.showTier);
+    }
+    if (input.post && typeof input.post === 'object') {
+      post.enabled = bool(input.post.enabled, post.enabled);
+      post.showEngagementRate = bool(input.post.showEngagementRate, post.showEngagementRate);
+      post.highlightHighEngagement = bool(input.post.highlightHighEngagement, post.highlightHighEngagement);
+      post.rateThreshold = number(input.post.rateThreshold, post.rateThreshold, 0, 1000);
+      post.minViews = number(input.post.minViews, post.minViews, 0, Number.MAX_SAFE_INTEGER);
+    }
+    if (input.filters && typeof input.filters === 'object') {
+      filters.enabled = bool(input.filters.enabled, filters.enabled);
+      filters.mode = oneOf(input.filters.mode, ['highlight', 'collapse'], filters.mode);
+      filters.includeKeywords = keywords(input.filters.includeKeywords);
+      filters.excludeKeywords = keywords(input.filters.excludeKeywords);
+    }
+    if (input.favorites && typeof input.favorites === 'object') {
+      favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
+    }
+  }
+
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, post, filters, favorites };
+}
+
+module.exports = { defaults: DEFAULTS, config, bool, number, oneOf, keywords };
 
 },
 "shared/settings": function(require, module, exports) {
@@ -92,6 +267,176 @@ function settings(input = {}) {
 }
 
 module.exports = { defaults, settings };
+
+},
+"shared/favorites": function(require, module, exports) {
+'use strict';
+// Account favorites + notes, persisted in chrome.storage.local.
+// Async CRUD. Prefer a stable user id as the key; fall back to normalized handle.
+
+const STORAGE_KEY = 'xp_v2_favorites';
+
+function keyOf(user) {
+  const id = user && (user.id || user.userId);
+  if (id && typeof id === 'string' && id) return 'uid:' + id;
+  if (user && typeof user.handle === 'string' && user.handle) return 'handle:' + user.handle;
+  return null;
+}
+
+async function readAll() {
+  const data = await chrome.storage.local.get(STORAGE_KEY);
+  return Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : [];
+}
+
+async function writeAll(list) {
+  await chrome.storage.local.set({ [STORAGE_KEY]: list });
+}
+
+async function listFavorites() {
+  return readAll();
+}
+
+async function getFavorite(key) {
+  const all = await readAll();
+  return all.find(f => f.key === key) || null;
+}
+
+async function saveFavorite(favorite) {
+  const key = favorite.key || keyOf(favorite);
+  if (!key) throw new Error('无法确定收藏键（缺少用户 ID 或 handle）');
+  const all = await readAll();
+  const existing = all.find(f => f.key === key);
+  const now = Date.now();
+  const record = {
+    ...favorite,
+    key,
+    handle: favorite.handle || '',
+    name: favorite.name || '',
+    tags: Array.isArray(favorite.tags) ? favorite.tags : [],
+    note: typeof favorite.note === 'string' ? favorite.note : '',
+    addedAt: existing ? existing.addedAt : now,
+    updatedAt: now
+  };
+  const next = existing ? all.map(f => (f.key === key ? record : f)) : [...all, record];
+  await writeAll(next);
+  return record;
+}
+
+async function updateFavorite(key, patch) {
+  const all = await readAll();
+  const existing = all.find(f => f.key === key);
+  if (!existing) throw new Error('收藏不存在');
+  const record = { ...existing, ...patch, key, updatedAt: Date.now() };
+  await writeAll(all.map(f => (f.key === key ? record : f)));
+  return record;
+}
+
+async function deleteFavorite(key) {
+  const all = await readAll();
+  const next = all.filter(f => f.key !== key);
+  if (next.length === all.length) return false;
+  await writeAll(next);
+  return true;
+}
+
+async function isFavorited(user) {
+  const key = keyOf(user);
+  if (!key) return false;
+  return !!(await getFavorite(key));
+}
+
+function searchFavorites(list, query) {
+  if (!Array.isArray(list)) return [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return list;
+  return list.filter(f => {
+    const hay = [f.handle, f.name, f.note, ...(f.tags || [])].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function sortFavorites(list, order = 'recent') {
+  if (!Array.isArray(list)) return [];
+  const copy = list.slice();
+  if (order === 'name') copy.sort((a, b) => String(a.handle || '').localeCompare(String(b.handle || '')));
+  else copy.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  return copy;
+}
+
+function rpc(action, payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'xp-favorite', action, payload }, response => {
+      const err = chrome.runtime.lastError;
+      if (err) { reject(new Error(err.message)); return; }
+      if (response && response.ok) resolve(response.result);
+      else reject(new Error((response && response.error) || '收藏操作失败'));
+    });
+  });
+}
+
+// Message-based client: routes writes through the background service worker (single writer).
+const client = {
+  list: () => rpc('list'),
+  get: key => rpc('get', { key }),
+  save: favorite => rpc('save', { favorite }),
+  update: (key, patch) => rpc('update', { key, patch }),
+  remove: key => rpc('delete', { key }),
+  isFavorited: user => rpc('isFavorited', { user })
+};
+
+module.exports = { STORAGE_KEY, keyOf, listFavorites, getFavorite, saveFavorite, updateFavorite, deleteFavorite, isFavorited, searchFavorites, sortFavorites, client };
+
+},
+"shared/exporter": function(require, module, exports) {
+'use strict';
+// CSV / JSON export for favorites. Pure text generation (no DOM); downloadFile
+// is a thin DOM helper guarded so it stays testable under Node.
+
+function escapeCSV(value) {
+  const s = value === null || value === undefined ? '' : String(value);
+  // Guard against spreadsheet formula injection.
+  const guarded = /^[=+\-@]/.test(s) ? "'" + s : s;
+  if (/[",\n\r]/.test(guarded)) return '"' + guarded.replace(/"/g, '""') + '"';
+  return guarded;
+}
+
+function isoDate(ts) {
+  const d = new Date(ts);
+  return Number.isFinite(+d) ? d.toISOString().slice(0, 10) : '';
+}
+
+function exportFavoritesCSV(favorites) {
+  const header = 'handle,name,user_id,tags,note,added_at,updated_at';
+  const rows = (favorites || []).map(f => [
+    f.handle, f.name, f.userId, (f.tags || []).join('|'), f.note, isoDate(f.addedAt), isoDate(f.updatedAt)
+  ].map(escapeCSV).join(','));
+  // UTF-8 BOM so Chinese CSV opens correctly in Excel.
+  return '\uFEFF' + [header, ...rows].join('\r\n') + '\r\n';
+}
+
+function exportFavoritesJSON(favorites) {
+  return JSON.stringify({
+    schemaVersion: 2,
+    exportedAt: new Date().toISOString(),
+    favorites: favorites || []
+  }, null, 2);
+}
+
+function downloadFile(content, filename, mimeType) {
+  if (typeof document === 'undefined' || typeof URL === 'undefined') return false;
+  const blob = new Blob([content], { type: mimeType || 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
+module.exports = { escapeCSV, exportFavoritesCSV, exportFavoritesJSON, downloadFile };
 
 }
 };

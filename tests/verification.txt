@@ -1,68 +1,18 @@
-﻿X Pulse 1.1.1 | 2026-10-10 (refactored to src/ + dist/)
-32 tests: unit + final-bundle mocked DOM + cross-context response bridge.
-Run with: node tests\core.test.cjs ; node tests\lens.test.cjs ; node tests\bridge.test.cjs ; node tests\render.test.cjs
+﻿X Pulse 2.0.0 | 2026-10-10
+74 tests: core/lens/bridge/render + config/tweet/analytics/rules/exporter/favorites/background/renderer.
+Run with: node build.cjs ; then node tests\<file>.test.cjs for each file.
 No authenticated live X verification.
 
 ----- core.test.cjs -----
-✔ handles: username, @name and allowed URLs only (0.8717ms)
-✔ legacy and modern GraphQL user schemas; exact integer including zero (0.4765ms)
-✔ v2 schema supported; approximate counts not accepted (0.1487ms)
-✔ integer strings accepted without treating abbreviations or missing values as counts (0.1711ms)
-✔ no confusing likes with followers, no secrets in emitted record (0.1514ms)
-✔ cycles and malformed payloads are safe (1.0767ms)
-✔ avatars restricted to HTTPS X image CDN (0.1771ms)
-✔ invalid, negative and stale/future samples rejected (0.2516ms)
-ℹ tests 8
-ℹ suites 0
-ℹ pass 8
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 8.6832
------ lens.test.cjs -----
-✔ new relationship_counts fields take precedence over legacy values (1.3501ms)
-✔ legacy nested user cannot erase new-format fields (0.7815ms)
-✔ missing follower count is not invented as zero; missing following stays unknown (0.2303ms)
-✔ compact formatting does not round across unit boundaries (19.575ms)
-✔ stale packets cannot overwrite newer values; cap page memory (37.8854ms)
-✔ full signature includes handle even when two people have identical metrics (0.2608ms)
-✔ handle resolver matches exact profile link text and ignores tweet URLs (0.576ms)
-✔ settings and untrusted message values validated (0.2195ms)
-✔ raw response transport parses inside isolated module and accepts valid user (0.9904ms)
-✔ modified page-world clock does not discard every observation (0.5219ms)
-✔ malformed transport reports explicit error, not silent zero users (0.8403ms)
-ℹ tests 11
-ℹ suites 0
-ℹ pass 11
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 72.0546
------ bridge.test.cjs -----
-✔ fetch response remains readable and identical; JSON transported to isolated parser (28.914ms)
-✔ unrelated network responses are never parsed (1.0849ms)
-✔ fetch errors propagate; observer does not break host page (1.0144ms)
-✔ XHR handles JSON responses and malformed text safely (0.9578ms)
-ℹ tests 4
-ℹ suites 0
-ℹ pass 4
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 35.3814
------ render.test.cjs -----
-✔ auto decorates all known users, with no manual account selection (23.8829ms)
-✔ virtualized row reused for unknown account removes stale badge (5.5243ms)
-✔ virtualized row switches identity even when counts match (4.2835ms)
-✔ rerender never duplicates badges; updates existing user count (1.8635ms)
-✔ toggle hides and restores without deleting host content; disconnected rows cleaned (1.3429ms)
-✔ safe tooltip never interprets profile name as HTML (16.0371ms)
-✔ reported undefined core regression: manifest bundle needs no global modules (13.9206ms)
-✔ bridge fetch to isolated bundle to badge works across separate VM contexts (54.5534ms)
-✔ diagnostic preserves exception cause and next good response recovers (4.802ms)
+✔ handles: username, @name and allowed URLs only (1.1672ms)
+✔ legacy and modern GraphQL user schemas; exact integer including zero (0.4121ms)
+✔ v2 schema supported; approximate counts not accepted (0.1679ms)
+✔ integer strings accepted without treating abbreviations or missing values as counts (0.1667ms)
+✔ no confusing likes with followers, no secrets in emitted record (0.1618ms)
+✔ cycles and malformed payloads are safe (1.1826ms)
+✔ avatars restricted to HTTPS X image CDN (0.1653ms)
+✔ invalid, negative and stale/future samples rejected (0.2805ms)
+✔ user id survives parsing and normalization (V2 fix) (0.2048ms)
 ℹ tests 9
 ℹ suites 0
 ℹ pass 9
@@ -70,4 +20,168 @@ No authenticated live X verification.
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 140.0359
+ℹ duration_ms 11.3199
+----- lens.test.cjs -----
+✔ new relationship_counts fields take precedence over legacy values (1.6215ms)
+✔ legacy nested user cannot erase new-format fields (0.2342ms)
+✔ missing follower count is not invented as zero; missing following stays unknown (0.1474ms)
+✔ compact formatting does not round across unit boundaries (14.4863ms)
+✔ stale packets cannot overwrite newer values; cap page memory (39.0101ms)
+✔ full signature includes handle even when two people have identical metrics (0.6584ms)
+✔ handle resolver matches exact profile link text and ignores tweet URLs (1.0024ms)
+✔ settings and untrusted message values validated (0.2204ms)
+✔ raw response transport parses inside isolated module and accepts valid user (0.4947ms)
+✔ transport also extracts posts from the same payload (0.4684ms)
+✔ modified page-world clock does not discard every observation (0.1525ms)
+✔ malformed transport reports explicit error, not silent zero users (0.4231ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 64.1131
+----- bridge.test.cjs -----
+✔ fetch response remains readable and identical; JSON transported to isolated parser (24.4831ms)
+✔ unrelated network responses are never parsed (1.8436ms)
+✔ fetch errors propagate; observer does not break host page (1.8556ms)
+✔ field whitelist strips private fields before forwarding (1.4584ms)
+✔ XHR handles JSON responses and malformed text safely (0.9686ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34.8096
+----- render.test.cjs -----
+✔ auto decorates all known users, with no manual account selection (21.078ms)
+✔ virtualized row reused for unknown account removes stale badge (2.4517ms)
+✔ virtualized row switches identity even when counts match (4.0047ms)
+✔ rerender never duplicates badges; updates existing user count (3.7516ms)
+✔ toggle hides and restores without deleting host content; disconnected rows cleaned (1.7888ms)
+✔ safe tooltip never interprets profile name as HTML (5.3243ms)
+✔ reported undefined core regression: manifest bundle needs no global modules (2.4635ms)
+✔ bridge fetch to isolated bundle to badge works across separate VM contexts (27.2648ms)
+✔ diagnostic preserves exception cause and next good response recovers (1.442ms)
+✔ post badge renders when a tweet article matches a cached post (1.4387ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 75.0341
+----- config.test.cjs -----
+✔ defaults and legacy flat fields (1.7323ms)
+✔ nested groups validate types and clamp ranges (0.2902ms)
+✔ keyword trim, dedupe and length cap (0.897ms)
+✔ unknown fields are not copied through (0.1357ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10.1448
+----- tweet.test.cjs -----
+✔ normalizes a v2 tweet payload with metrics and author (1.317ms)
+✔ missing views becomes null; approximate strings rejected (0.2049ms)
+✔ dedupes by id; outer and quoted tweets stay separate records (0.1609ms)
+✔ nodes without a post id are ignored (0.0838ms)
+✔ text falls back to legacy.text and is truncated (0.1366ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7.3439
+----- analytics.test.cjs -----
+✔ engagement rate (0.7458ms)
+✔ engagement can exceed 100% (0.1161ms)
+✔ follower ratio (0.1003ms)
+✔ account age uses calendar months (0.7392ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7.0098
+----- rules.test.cjs -----
+✔ keyword matching ignores case (1.2537ms)
+✔ normalizeKeyword trims and caps length (0.2232ms)
+✔ filter priority: exclude collapse > include highlight > show (0.3175ms)
+✔ highlight engagement rules (0.4952ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9.533
+----- exporter.test.cjs -----
+✔ CSV keeps Chinese and escapes quotes/commas/newlines (2.5362ms)
+✔ CSV guards formula injection and uses BOM (0.2262ms)
+✔ JSON round-trips and is parseable (0.2661ms)
+✔ export does not mutate input (0.133ms)
+✔ no data yields header only / empty favorites (0.6466ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9.127
+----- favorites.test.cjs -----
+✔ save dedupes by user id key and persists (0.8165ms)
+✔ fallback key by handle when no id (0.1191ms)
+✔ update and delete (0.2411ms)
+✔ isFavorited reflects state (0.759ms)
+✔ missing key throws (0.4213ms)
+✔ searchFavorites matches handle/name/note/tags (0.176ms)
+✔ sortFavorites by recency or name (7.8306ms)
+✔ client routes writes through background messages (0.1905ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18.8197
+----- background.test.cjs -----
+✔ concurrent favorite writes are serialized without losing updates (1.0156ms)
+✔ isFavorited reflects state after save (0.2645ms)
+✔ unknown action reports error (0.1706ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7.1924
+----- renderer.test.cjs -----
+✔ getPostIdFromDOM extracts the status id from links (0.7172ms)
+✔ postBadgeText formats metrics and engagement (13.443ms)
+✔ renderPostBadge creates a badge element (0.1686ms)
+✔ renderPostBadge respects the disabled switch (0.0828ms)
+✔ highlight and collapse classes toggle (0.2886ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 19.83

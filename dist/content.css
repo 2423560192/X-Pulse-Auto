@@ -23,5 +23,10 @@
 #xp-inline-tip .xp-tip-row>span{color:var(--xp-muted)}
 #xp-inline-tip .xp-tip-row>strong{font-weight:550;font-variant-numeric:tabular-nums}
 #xp-inline-tip .xp-tip-note{border-top:1px solid var(--xp-line);margin-top:14px;padding-top:11px;color:var(--xp-muted);font-size:9px;white-space:pre-line}
+#xp-inline-tip .xp-fav-btn{margin-top:12px;padding:6px 10px;border:1px solid var(--xp-line);border-radius:8px;background:transparent;color:var(--xp-accent);font:600 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif;cursor:pointer}
+#xp-inline-tip .xp-fav-btn:disabled{opacity:.5;cursor:default}
 #xp-inline-hud{position:fixed!important;left:12px!important;bottom:12px!important;z-index:2147483647!important;padding:7px 12px!important;background:#17232dee!important;color:#ade6d9!important;border:1px solid #527c7155!important;border-radius:9px!important;font:11px/1.4 monospace!important;pointer-events:none!important}
 @media(prefers-reduced-motion:no-preference){.xp-count{transition:filter .15s ease}.xp-badge:hover .xp-count{filter:brightness(1.12)}}
+.xp-post-badge{display:inline-flex!important;align-items:center!important;gap:6px!important;font:600 11px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important;color:#536471!important;padding:2px 0!important;white-space:nowrap!important}
+.xp-highlight{box-shadow:inset 3px 0 0 #1d9bf0!important}
+.xp-collapsed{opacity:.35!important}

@@ -1,7 +1,9 @@
 'use strict';
-// Message ingress: parse the JSON bridge packet and feed validated records into the store.
+// Message ingress: parse the JSON bridge packet, extract users and posts,
+// and feed validated user records into the store.
 
 const core = require('./core.js');
+const tweet = require('./tweet.js');
 const { accept } = require('./store.js');
 
 function receive(cache, message, now = Date.now()) {
@@ -10,11 +12,12 @@ function receive(cache, message, now = Date.now()) {
   let body;
   try { body = JSON.parse(message.bodyText); } catch { throw new Error('X 响应不是有效 JSON'); }
   const users = core.extractUsers(body);
+  const posts = tweet.extractPosts(body);
   const requestAt = message.requestAt;
   // Do not drop all observations because a page-world clock was modified.
   const at = Number.isFinite(requestAt) && requestAt <= now + 5000 && requestAt >= now - 3600000 ? requestAt : now;
   const accepted = accept(cache, users, at, now);
-  return { parsed: users.length, accepted };
+  return { parsed: users.length, accepted, posts };
 }
 
 module.exports = { receive };

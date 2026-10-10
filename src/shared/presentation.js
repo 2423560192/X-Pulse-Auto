@@ -10,6 +10,8 @@ function format(n, mode = 'compact') {
 
 function tier(n) { return n >= 1e6 ? 4 : n >= 1e5 ? 3 : n >= 1e4 ? 2 : n >= 1e3 ? 1 : 0; }
 
+function tierLabel(n) { return n >= 1e6 ? '百万粉' : n >= 1e5 ? '十万粉' : n >= 1e4 ? '万粉' : n >= 1e3 ? '千粉' : '未满千粉'; }
+
 function relation(u) { return u.followsYou === true ? (u.youFollow === true ? '互关' : '关注了你') : ''; }
 
-module.exports = { format, tier, relation };
+module.exports = { format, tier, tierLabel, relation };

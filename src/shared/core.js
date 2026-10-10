@@ -1,6 +1,6 @@
 'use strict';
 // Pure parsing/validation: no DOM, no storage, no side effects.
-// Extracts user records from X response payloads and validates samples.
+// Extracts and normalizes user records from X response payloads.
 
 const reserved = new Set(['home','explore','notifications','messages','settings','search','i','compose','login','logout','signup','intent','tos','privacy']);
 
@@ -35,13 +35,13 @@ function extractUsers(json) {
     if (!node || typeof node !== 'object' || seen.has(node)) continue;
     seen.add(node);
     const handle = normalizeHandle(node.core?.screen_name || node.legacy?.screen_name || node.screen_name || node.username);
-    const count = readCount(node.relationship_counts?.followers ?? node.relationship_counts?.followers_count ?? node.legacy?.followers_count ?? node.public_metrics?.followers_count ?? node.followers_count);
-    if (handle && count !== null) {
+    const followers = readCount(node.relationship_counts?.followers ?? node.relationship_counts?.followers_count ?? node.legacy?.followers_count ?? node.public_metrics?.followers_count ?? node.followers_count);
+    if (handle && followers !== null) {
       const prior = found.get(handle);
       const nullableInt = readCount;
       const relationship = node.relationship_perspectives || node.legacy || {};
       const item = {
-        handle, count,
+        handle, followers,
         id: String(node.rest_id || node.id_str || node.id || '').slice(0,40),
         name: String(node.core?.name || node.legacy?.name || node.name || handle).slice(0,100),
         avatar: safeAvatar(node.avatar?.image_url || node.legacy?.profile_image_url_https || node.profile_image_url_https || node.profile_image_url),
@@ -62,10 +62,16 @@ function extractUsers(json) {
 
 function validateSample(sample, now = Date.now()) {
   if (!sample || typeof sample !== 'object' || !normalizeHandle(sample.handle)) return null;
-  if (!Number.isSafeInteger(sample.count) || sample.count < 0) return null;
-  if (!Number.isFinite(sample.at) || sample.at > now + 5000 || sample.at < now - 3600000) return null;
-  return {handle: normalizeHandle(sample.handle), count: sample.count, at: sample.at,
-    name: String(sample.name || sample.handle).slice(0,100), avatar: safeAvatar(sample.avatar)};
+  if (!Number.isSafeInteger(sample.followers) || sample.followers < 0) return null;
+  if (!Number.isFinite(sample.observedAt) || sample.observedAt > now + 5000 || sample.observedAt < now - 3600000) return null;
+  return {
+    id: typeof sample.id === 'string' ? sample.id.slice(0, 40) : '',
+    handle: normalizeHandle(sample.handle),
+    followers: sample.followers,
+    observedAt: sample.observedAt,
+    name: String(sample.name || sample.handle).slice(0, 100),
+    avatar: safeAvatar(sample.avatar)
+  };
 }
 
 module.exports = { normalizeHandle, safeAvatar, readCount, extractUsers, validateSample };

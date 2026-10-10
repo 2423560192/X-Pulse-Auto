@@ -11,3 +11,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 发布包（附件上传到 GitHub Release，不入库）
+*.zip

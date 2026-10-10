@@ -21,7 +21,7 @@ function theme() {
 
 function owned(node) {
   const n = node.nodeType === 1 ? node : node.parentElement;
-  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud');
+  return !!n?.closest?.('.xp-badge,.xp-badge-line,.xp-post-badge,#xp-inline-tip,#xp-inline-hud');
 }
 
 module.exports = { el, theme, owned };

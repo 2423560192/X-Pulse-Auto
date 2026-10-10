@@ -6,7 +6,7 @@
 
 无需填写账号 · 无需 API Key · 不额外发送网络请求 · 零依赖
 
-![version](https://img.shields.io/badge/version-1.1.1-1d9bf0)
+![version](https://img.shields.io/badge/version-2.0.0-1d9bf0)
 ![manifest](https://img.shields.io/badge/manifest-v3-15a18b)
 ![chrome](https://img.shields.io/badge/chrome-111%2B-be862b)
 ![license](https://img.shields.io/badge/license-MIT-a67bd9)
@@ -184,7 +184,7 @@ node --test tests/*.test.cjs
 
 ## 测试
 
-`tests/` 下包含 **32 项** 自动测试，覆盖：
+`tests/` 下包含 **74 项** 自动测试，覆盖：
 
 | 测试文件 | 覆盖范围 |
 | --- | --- |
@@ -192,6 +192,14 @@ node --test tests/*.test.cjs
 | `lens.test.cjs` | 设置校验、数字格式化边界、乱序数据、缓存上限与签名 |
 | `bridge.test.cjs` | fetch / XHR 透传、非目标响应不解析、异常不影响宿主页面 |
 | `render.test.cjs` | 模拟 DOM 下的自动插入、重复渲染、开关、虚拟列表复用、悬停转义 |
+| `config.test.cjs` | V2 设置默认值、类型校验、范围限制、关键词去重 |
+| `tweet.test.cjs` | 推文解析、缺失字段、引用推文区分 |
+| `analytics.test.cjs` | 互动率、粉关比、账号年龄的零值/边界处理 |
+| `rules.test.cjs` | 关键词匹配、屏蔽/关注优先级、高亮门槛 |
+| `exporter.test.cjs` | CSV 转义、JSON 结构、公式注入防护 |
+| `favorites.test.cjs` | 收藏 CRUD、去重、键回退、消息客户端、搜索/排序 |
+| `background.test.cjs` | 收藏并发写入串行化、消息路由 |
+| `renderer.test.cjs` | 推文徽标、Post ID 提取、高亮/折叠标记 |
 
 其中**完整链路测试**在两个独立 JavaScript 环境中运行真实请求桥与最终安装包脚本，不预先注入核心模块，以防再次漏掉依赖初始化问题。最近一次结果见 [`tests/verification.txt`](./tests/verification.txt)。
 
@@ -216,14 +224,21 @@ x-pulse-auto/
 │   │   ├── settings.js         # 设置默认值与校验
 │   │   ├── presentation.js     # 数字格式化 / 配色档位 / 关系标签
 │   │   ├── store.js            # 记录缓存与渲染签名
-│   │   ├── transport.js        # 消息接入（版本 / 体积校验）
-│   │   └── handle.js           # DOM → 句柄定位
+│   │   ├── transport.js        # 消息接入（用户 + 推文解析）
+│   │   ├── handle.js           # DOM → 句柄定位
+│   │   ├── config.js           # V2 设置：迁移 / 校验 / 范围限制
+│   │   ├── tweet.js            # 推文（PostRecord）解析
+│   │   ├── analytics.js        # 互动率 / 粉关比 / 账号年龄
+│   │   ├── rules.js            # 关键词匹配 / 高亮 / 过滤决策
+│   │   ├── exporter.js         # CSV / JSON 导出
+│   │   └── favorites.js        # 账号收藏与备注（异步 CRUD）
 │   ├── content/                # 内容脚本（高内聚拆分）
 │   │   ├── index.js            # 编排入口（组合根，持有共享状态）
 │   │   ├── dom.js              # DOM 小工具
 │   │   ├── tooltip.js          # 悬停卡片
 │   │   ├── badge.js            # 徽标元素
 │   │   ├── layout.js           # 布局与落位
+│   │   ├── renderer.js         # 推文徽标 / 高亮 / 过滤渲染
 │   │   ├── observer.js         # MutationObserver 调度
 │   │   └── diagnostics.js      # 诊断 HUD 与状态上报
 │   ├── popup/                  # 设置面板（index.js / popup.html / popup.css）
@@ -236,12 +251,17 @@ x-pulse-auto/
 │   ├── content.css / popup.html / popup.css / preview.html
 │   └── icons/
 ├── build.cjs                   # 零依赖构建脚本
-├── tests/                      # 自动测试（32 项）
+├── tests/                      # 自动测试（74 项）
 ├── icons/                      # 扩展图标（16 / 48 / 128）
+├── docs/                       # V2.0 实施方案与现状差异对照
 └── LICENSE                     # MIT 许可
 ```
 
 ## 版本历史
+
+### 2.0.0
+
+新增账号分析（粉丝档位 / 粉关比 / 账号年龄）、推文指标与互动率、内容高亮与关键词过滤、账号收藏与备注（后台串行化写入）、CSV / JSON 导出；引入 V2 设置模型、bridge 字段白名单，并统一用户数据模型、修复用户 ID 丢失，测试覆盖提升至 74 项。
 
 ### 1.1.1
 

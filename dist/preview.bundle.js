@@ -51,7 +51,7 @@ require('../content/index.js');
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '1.1.1';
+module.exports = '2.0.0';
 
 },
 "content/index": function(require, module, exports) {
@@ -60,12 +60,16 @@ module.exports = '1.1.1';
 // the cohesive modules together; no cross-module globals are used.
 
 const version = require('../version.js');
-const settingsApi = require('../shared/settings.js');
+const config = require('../shared/config.js');
+const analytics = require('../shared/analytics.js');
 const presentation = require('../shared/presentation.js');
 const store = require('../shared/store.js');
 const transport = require('../shared/transport.js');
 const handle = require('../shared/handle.js');
+const favorites = require('../shared/favorites.js');
+const rules = require('../shared/rules.js');
 const dom = require('./dom.js');
+const renderer = require('./renderer.js');
 const createTooltip = require('./tooltip.js');
 const createBadge = require('./badge.js');
 const createLayout = require('./layout.js');
@@ -76,9 +80,10 @@ const KEY = 'xp_inline_settings';
 
 // Shared mutable state, owned by this composition root.
 const state = {
-  cache: new Map(),
+  cache: new Map(),   // users by handle
+  posts: new Map(),   // posts by id (in-memory only, never persisted)
   placed: new Map(),
-  settings: settingsApi.settings(),
+  settings: config.config(),
   stats: { packets: 0, parsed: 0, accepted: 0, lastError: '', bridgeVersion: '', lastPacket: 0 },
   initialized: false,
   pending: [],
@@ -89,7 +94,25 @@ const state = {
   hud: null
 };
 
-const tooltip = createTooltip({ state, presentation, el: dom.el, theme: dom.theme });
+const postPlaced = new Map();
+const favoriteKeys = new Set();
+const favorite = chrome.runtime?.sendMessage ? {
+  keyOf: favorites.keyOf,
+  isFavorited: u => favoriteKeys.has(favorites.keyOf(u)),
+  toggle: async u => {
+    const key = favorites.keyOf(u);
+    if (!key) throw new Error('无法确定收藏键');
+    if (favoriteKeys.has(key)) {
+      await favorites.client.remove(key);
+      favoriteKeys.delete(key);
+    } else {
+      const rec = await favorites.client.save({ userId: u.id, handle: u.handle, name: u.name });
+      favoriteKeys.add(rec.key);
+    }
+  }
+} : null;
+
+const tooltip = createTooltip({ state, presentation, analytics, favorite, el: dom.el, theme: dom.theme });
 const badge = createBadge({ state, presentation, tooltip, el: dom.el });
 const layout = createLayout({ state, handle, store, badge, tooltip, el: dom.el });
 const diagnostics = createDiagnostics({ state, version, el: dom.el });
@@ -113,12 +136,57 @@ function render() {
     } else {
       document.querySelectorAll('article[data-testid="tweet"] [data-testid="User-Name"]').forEach(un => layout.reconcile(un, un, false));
       document.querySelectorAll('[data-testid="UserCell"]').forEach(cell => layout.reconcile(cell, layout.cellAnchor(cell), true));
+      reconcilePosts();
     }
     diagnostics.updateHud();
   } catch (error) {
     state.stats.lastError = '页面渲染：' + String(error.message || error).slice(0, 160);
   } finally {
     observer.observe();
+  }
+}
+
+function applyPostDecision(article, post) {
+  const postCfg = state.settings.post || {};
+  if (postCfg.highlightHighEngagement) {
+    const hl = rules.evaluateHighlight(post, { type: 'engagement', threshold: postCfg.rateThreshold, minViews: postCfg.minViews, enabled: true });
+    if (hl.triggered) renderer.applyHighlight(article);
+    else renderer.clearHighlight(article);
+  } else renderer.clearHighlight(article);
+
+  const filters = state.settings.filters || {};
+  if (filters.enabled) {
+    const decision = rules.evaluateFilter(post, state.settings);
+    if (decision.action === 'collapse') renderer.applyCollapse(article, dom.el);
+    else renderer.clearCollapse(article);
+  } else renderer.clearCollapse(article);
+}
+
+function reconcilePosts() {
+  const articles = document.querySelectorAll('article[data-testid="tweet"]');
+  const seen = new Set();
+  for (const article of articles) {
+    seen.add(article);
+    const id = renderer.getPostIdFromDOM(article);
+    const post = id ? state.posts.get(id) : null;
+    const old = postPlaced.get(article);
+    if (!post) {
+      if (old) { old.badge.remove(); postPlaced.delete(article); }
+      renderer.clearHighlight(article);
+      renderer.clearCollapse(article);
+      continue;
+    }
+    if (old && old.id === post.id && old.badge.isConnected) {
+      old.badge.textContent = renderer.postBadgeText(post, state.settings);
+    } else {
+      if (old) old.badge.remove();
+      const badge = renderer.renderPostBadge(article, post, state.settings, dom.el);
+      if (badge) postPlaced.set(article, { badge, id: post.id });
+    }
+    applyPostDecision(article, post);
+  }
+  for (const [article, rec] of postPlaced) {
+    if (!seen.has(article) || !article.isConnected) { rec.badge.remove(); postPlaced.delete(article); }
   }
 }
 
@@ -131,6 +199,8 @@ function consume(data) {
     const result = transport.receive(state.cache, data);
     state.stats.parsed += result.parsed;
     state.stats.accepted += result.accepted;
+    for (const post of result.posts) state.posts.set(post.id, post);
+    while (state.posts.size > 2000) state.posts.delete(state.posts.keys().next().value);
     state.stats.lastError = '';
   } catch (error) {
     state.stats.lastError = String(error.message || error).slice(0, 200);
@@ -154,7 +224,7 @@ window.addEventListener('message', handleMessage);
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes[KEY]) {
-    state.settings = settingsApi.settings(changes[KEY].newValue);
+    state.settings = config.config(changes[KEY].newValue);
     if (!state.settings.enabled) state.pending.length = 0;
     tooltip.hide();
     schedule();
@@ -166,8 +236,11 @@ chrome.runtime.onMessage.addListener((message, _, reply) => {
 });
 
 chrome.storage.local.get(KEY).then(data => {
-  state.settings = settingsApi.settings(data[KEY]);
+  state.settings = config.config(data[KEY]);
   state.initialized = true;
+  if (favorite) {
+    favorites.client.list().then(list => { for (const f of list) favoriteKeys.add(f.key); }).catch(() => {});
+  }
   while (state.pending.length) consume(state.pending.shift());
   schedule();
 }).catch(() => {
@@ -190,6 +263,81 @@ window.addEventListener('resize', () => {
     schedule();
   }, 180);
 });
+
+},
+"shared/config": function(require, module, exports) {
+'use strict';
+// V2 settings: legacy flat fields + nested groups, with type validation,
+// clamping, keyword normalization, and old->new field migration.
+
+const legacy = require('./settings.js');
+
+const DEFAULTS = {
+  schemaVersion: 2,
+  account: { showFollowers: true, showRatio: true, showAge: true, showTier: true },
+  post: { enabled: true, showEngagementRate: true, highlightHighEngagement: false, rateThreshold: 2, minViews: 1000 },
+  filters: { enabled: false, mode: 'highlight', includeKeywords: [], excludeKeywords: [] },
+  favorites: { enabled: true }
+};
+
+const MAX_KEYWORDS = 200;
+const MAX_KEYWORD_LENGTH = 60;
+
+function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
+function number(value, fallback, min, max) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+function oneOf(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
+function keywords(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const k = item.trim().slice(0, MAX_KEYWORD_LENGTH);
+    if (k && !out.includes(k)) out.push(k);
+    if (out.length >= MAX_KEYWORDS) break;
+  }
+  return out;
+}
+
+function config(input = {}) {
+  const flat = legacy.settings(input); // legacy flat fields keep working unchanged
+
+  const account = { ...DEFAULTS.account };
+  const post = { ...DEFAULTS.post };
+  const filters = { ...DEFAULTS.filters };
+  const favorites = { ...DEFAULTS.favorites };
+
+  if (input && typeof input === 'object') {
+    if (input.account && typeof input.account === 'object') {
+      account.showFollowers = bool(input.account.showFollowers, account.showFollowers);
+      account.showRatio = bool(input.account.showRatio, account.showRatio);
+      account.showAge = bool(input.account.showAge, account.showAge);
+      account.showTier = bool(input.account.showTier, account.showTier);
+    }
+    if (input.post && typeof input.post === 'object') {
+      post.enabled = bool(input.post.enabled, post.enabled);
+      post.showEngagementRate = bool(input.post.showEngagementRate, post.showEngagementRate);
+      post.highlightHighEngagement = bool(input.post.highlightHighEngagement, post.highlightHighEngagement);
+      post.rateThreshold = number(input.post.rateThreshold, post.rateThreshold, 0, 1000);
+      post.minViews = number(input.post.minViews, post.minViews, 0, Number.MAX_SAFE_INTEGER);
+    }
+    if (input.filters && typeof input.filters === 'object') {
+      filters.enabled = bool(input.filters.enabled, filters.enabled);
+      filters.mode = oneOf(input.filters.mode, ['highlight', 'collapse'], filters.mode);
+      filters.includeKeywords = keywords(input.filters.includeKeywords);
+      filters.excludeKeywords = keywords(input.filters.excludeKeywords);
+    }
+    if (input.favorites && typeof input.favorites === 'object') {
+      favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
+    }
+  }
+
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, post, filters, favorites };
+}
+
+module.exports = { defaults: DEFAULTS, config, bool, number, oneOf, keywords };
 
 },
 "shared/settings": function(require, module, exports) {
@@ -219,6 +367,42 @@ function settings(input = {}) {
 module.exports = { defaults, settings };
 
 },
+"shared/analytics": function(require, module, exports) {
+'use strict';
+// Pure metric calculations: engagement rate, follower ratio, account age.
+
+function calculateEngagement(metrics) {
+  if (!metrics || typeof metrics !== 'object') return null;
+  const keys = ['likes', 'replies', 'reposts', 'quotes', 'views'];
+  if (!keys.every(k => Number.isSafeInteger(metrics[k]) && metrics[k] >= 0)) return null;
+  if (metrics.views === 0) return null;
+  const total = metrics.likes + metrics.replies + metrics.reposts + metrics.quotes;
+  if (!Number.isSafeInteger(total)) return null;
+  return total / metrics.views * 100;
+}
+
+function getFollowerRatio(user) {
+  if (!user || !Number.isSafeInteger(user.followers) || user.followers < 0) return null;
+  if (!Number.isSafeInteger(user.following) || user.following <= 0) return null;
+  return user.followers / user.following;
+}
+
+function getAccountAge(user, now = Date.now()) {
+  if (!user || typeof user.createdAt !== 'string' || !user.createdAt) return null;
+  const created = new Date(user.createdAt);
+  if (!Number.isFinite(+created)) return null;
+  if (created.getTime() > now) return null; // future dates are not allowed
+  const n = new Date(now);
+  let years = n.getFullYear() - created.getFullYear();
+  let months = n.getMonth() - created.getMonth();
+  if (n.getDate() < created.getDate()) months--;
+  if (months < 0) { years--; months += 12; }
+  return { years, months, totalMonths: years * 12 + months };
+}
+
+module.exports = { calculateEngagement, getFollowerRatio, getAccountAge };
+
+},
 "shared/presentation": function(require, module, exports) {
 'use strict';
 // Pure presentation helpers: number formatting, color tier, relationship label.
@@ -232,9 +416,11 @@ function format(n, mode = 'compact') {
 
 function tier(n) { return n >= 1e6 ? 4 : n >= 1e5 ? 3 : n >= 1e4 ? 2 : n >= 1e3 ? 1 : 0; }
 
+function tierLabel(n) { return n >= 1e6 ? '百万粉' : n >= 1e5 ? '十万粉' : n >= 1e4 ? '万粉' : n >= 1e3 ? '千粉' : '未满千粉'; }
+
 function relation(u) { return u.followsYou === true ? (u.youFollow === true ? '互关' : '关注了你') : ''; }
 
-module.exports = { format, tier, relation };
+module.exports = { format, tier, tierLabel, relation };
 
 },
 "shared/store": function(require, module, exports) {
@@ -246,14 +432,14 @@ const core = require('./core.js');
 const { settings } = require('./settings.js');
 
 function sanitize(u, at, now = Date.now()) {
-  const base = core.validateSample({ ...u, at }, now);
+  const base = core.validateSample({ ...u, observedAt: at }, now);
   if (!base) return null;
   const num = v => Number.isSafeInteger(v) && v >= 0 ? v : null;
   return {
     ...base,
     following: num(u.following),
     posts: num(u.posts),
-    createdAt: typeof u.createdAt === 'string' ? u.createdAt.slice(0,64) : '',
+    createdAt: typeof u.createdAt === 'string' ? u.createdAt.slice(0, 64) : '',
     followsYou: typeof u.followsYou === 'boolean' ? u.followsYou : null,
     youFollow: typeof u.youFollow === 'boolean' ? u.youFollow : null
   };
@@ -266,7 +452,7 @@ function accept(cache, batch, at, now = Date.now()) {
     const u = sanitize(raw, at, now);
     if (!u) continue;
     const old = cache.get(u.handle);
-    if (old && old.at >= u.at) continue;
+    if (old && old.observedAt >= u.observedAt) continue;
     cache.delete(u.handle);
     cache.set(u.handle, u);
     changed++;
@@ -276,7 +462,7 @@ function accept(cache, batch, at, now = Date.now()) {
 }
 
 function signature(u, s, compact) {
-  return JSON.stringify([u.handle, u.count, u.following, u.posts, u.followsYou, u.youFollow, settings(s), !!compact]);
+  return JSON.stringify([u.handle, u.followers, u.following, u.posts, u.followsYou, u.youFollow, settings(s), !!compact]);
 }
 
 module.exports = { sanitize, accept, signature };
@@ -285,7 +471,7 @@ module.exports = { sanitize, accept, signature };
 "shared/core": function(require, module, exports) {
 'use strict';
 // Pure parsing/validation: no DOM, no storage, no side effects.
-// Extracts user records from X response payloads and validates samples.
+// Extracts and normalizes user records from X response payloads.
 
 const reserved = new Set(['home','explore','notifications','messages','settings','search','i','compose','login','logout','signup','intent','tos','privacy']);
 
@@ -320,13 +506,13 @@ function extractUsers(json) {
     if (!node || typeof node !== 'object' || seen.has(node)) continue;
     seen.add(node);
     const handle = normalizeHandle(node.core?.screen_name || node.legacy?.screen_name || node.screen_name || node.username);
-    const count = readCount(node.relationship_counts?.followers ?? node.relationship_counts?.followers_count ?? node.legacy?.followers_count ?? node.public_metrics?.followers_count ?? node.followers_count);
-    if (handle && count !== null) {
+    const followers = readCount(node.relationship_counts?.followers ?? node.relationship_counts?.followers_count ?? node.legacy?.followers_count ?? node.public_metrics?.followers_count ?? node.followers_count);
+    if (handle && followers !== null) {
       const prior = found.get(handle);
       const nullableInt = readCount;
       const relationship = node.relationship_perspectives || node.legacy || {};
       const item = {
-        handle, count,
+        handle, followers,
         id: String(node.rest_id || node.id_str || node.id || '').slice(0,40),
         name: String(node.core?.name || node.legacy?.name || node.name || handle).slice(0,100),
         avatar: safeAvatar(node.avatar?.image_url || node.legacy?.profile_image_url_https || node.profile_image_url_https || node.profile_image_url),
@@ -347,10 +533,16 @@ function extractUsers(json) {
 
 function validateSample(sample, now = Date.now()) {
   if (!sample || typeof sample !== 'object' || !normalizeHandle(sample.handle)) return null;
-  if (!Number.isSafeInteger(sample.count) || sample.count < 0) return null;
-  if (!Number.isFinite(sample.at) || sample.at > now + 5000 || sample.at < now - 3600000) return null;
-  return {handle: normalizeHandle(sample.handle), count: sample.count, at: sample.at,
-    name: String(sample.name || sample.handle).slice(0,100), avatar: safeAvatar(sample.avatar)};
+  if (!Number.isSafeInteger(sample.followers) || sample.followers < 0) return null;
+  if (!Number.isFinite(sample.observedAt) || sample.observedAt > now + 5000 || sample.observedAt < now - 3600000) return null;
+  return {
+    id: typeof sample.id === 'string' ? sample.id.slice(0, 40) : '',
+    handle: normalizeHandle(sample.handle),
+    followers: sample.followers,
+    observedAt: sample.observedAt,
+    name: String(sample.name || sample.handle).slice(0, 100),
+    avatar: safeAvatar(sample.avatar)
+  };
 }
 
 module.exports = { normalizeHandle, safeAvatar, readCount, extractUsers, validateSample };
@@ -358,9 +550,11 @@ module.exports = { normalizeHandle, safeAvatar, readCount, extractUsers, validat
 },
 "shared/transport": function(require, module, exports) {
 'use strict';
-// Message ingress: parse the JSON bridge packet and feed validated records into the store.
+// Message ingress: parse the JSON bridge packet, extract users and posts,
+// and feed validated user records into the store.
 
 const core = require('./core.js');
+const tweet = require('./tweet.js');
 const { accept } = require('./store.js');
 
 function receive(cache, message, now = Date.now()) {
@@ -369,14 +563,81 @@ function receive(cache, message, now = Date.now()) {
   let body;
   try { body = JSON.parse(message.bodyText); } catch { throw new Error('X 响应不是有效 JSON'); }
   const users = core.extractUsers(body);
+  const posts = tweet.extractPosts(body);
   const requestAt = message.requestAt;
   // Do not drop all observations because a page-world clock was modified.
   const at = Number.isFinite(requestAt) && requestAt <= now + 5000 && requestAt >= now - 3600000 ? requestAt : now;
   const accepted = accept(cache, users, at, now);
-  return { parsed: users.length, accepted };
+  return { parsed: users.length, accepted, posts };
 }
 
 module.exports = { receive };
+
+},
+"shared/tweet": function(require, module, exports) {
+'use strict';
+// PostRecord parsing: extracts normalized tweet records from X GraphQL payloads.
+// Pure, no DOM; the DOM-to-post-id association lives in the content layer.
+
+const core = require('./core.js');
+
+function metric(value) {
+  if (typeof value === 'string' && /^\d{1,16}$/.test(value)) value = Number(value);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function authorOf(raw) {
+  const result = raw.core?.user_results?.result;
+  return {
+    authorId: String(result?.rest_id || raw.legacy?.user_id_str || raw.user_id_str || '').slice(0, 40),
+    authorHandle: core.normalizeHandle(result?.legacy?.screen_name || raw.legacy?.screen_name || raw.author?.screen_name)
+  };
+}
+
+function normalizePost(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.rest_id || raw.id_str || raw.id || '').slice(0, 40);
+  if (!id) return null;
+  const legacy = raw.legacy || {};
+  const { authorId, authorHandle } = authorOf(raw);
+  return {
+    id,
+    authorId,
+    authorHandle,
+    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000),
+    metrics: {
+      likes: metric(legacy.favorite_count),
+      replies: metric(legacy.reply_count),
+      reposts: metric(legacy.retweet_count),
+      quotes: metric(legacy.quote_count),
+      views: metric(raw.views?.count ?? legacy.view_count)
+    }
+  };
+}
+
+function isTweetNode(node) {
+  if (node.__typename === 'Tweet') return true;
+  const legacy = node.legacy;
+  return !!legacy && (typeof legacy.full_text === 'string' || 'favorite_count' in legacy);
+}
+
+function extractPosts(json) {
+  const queue = [json], found = new Map(), seen = new WeakSet();
+  let examined = 0;
+  while (queue.length && examined++ < 50000) {
+    const node = queue.pop();
+    if (!node || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    if (isTweetNode(node)) {
+      const post = normalizePost(node);
+      if (post && !found.has(post.id)) found.set(post.id, post);
+    }
+    for (const value of Object.values(node)) if (value && typeof value === 'object') queue.push(value);
+  }
+  return [...found.values()].slice(0, 500);
+}
+
+module.exports = { extractPosts, normalizePost, metric };
 
 },
 "shared/handle": function(require, module, exports) {
@@ -397,6 +658,172 @@ function handleOf(container) {
 }
 
 module.exports = { handleOf };
+
+},
+"shared/favorites": function(require, module, exports) {
+'use strict';
+// Account favorites + notes, persisted in chrome.storage.local.
+// Async CRUD. Prefer a stable user id as the key; fall back to normalized handle.
+
+const STORAGE_KEY = 'xp_v2_favorites';
+
+function keyOf(user) {
+  const id = user && (user.id || user.userId);
+  if (id && typeof id === 'string' && id) return 'uid:' + id;
+  if (user && typeof user.handle === 'string' && user.handle) return 'handle:' + user.handle;
+  return null;
+}
+
+async function readAll() {
+  const data = await chrome.storage.local.get(STORAGE_KEY);
+  return Array.isArray(data[STORAGE_KEY]) ? data[STORAGE_KEY] : [];
+}
+
+async function writeAll(list) {
+  await chrome.storage.local.set({ [STORAGE_KEY]: list });
+}
+
+async function listFavorites() {
+  return readAll();
+}
+
+async function getFavorite(key) {
+  const all = await readAll();
+  return all.find(f => f.key === key) || null;
+}
+
+async function saveFavorite(favorite) {
+  const key = favorite.key || keyOf(favorite);
+  if (!key) throw new Error('无法确定收藏键（缺少用户 ID 或 handle）');
+  const all = await readAll();
+  const existing = all.find(f => f.key === key);
+  const now = Date.now();
+  const record = {
+    ...favorite,
+    key,
+    handle: favorite.handle || '',
+    name: favorite.name || '',
+    tags: Array.isArray(favorite.tags) ? favorite.tags : [],
+    note: typeof favorite.note === 'string' ? favorite.note : '',
+    addedAt: existing ? existing.addedAt : now,
+    updatedAt: now
+  };
+  const next = existing ? all.map(f => (f.key === key ? record : f)) : [...all, record];
+  await writeAll(next);
+  return record;
+}
+
+async function updateFavorite(key, patch) {
+  const all = await readAll();
+  const existing = all.find(f => f.key === key);
+  if (!existing) throw new Error('收藏不存在');
+  const record = { ...existing, ...patch, key, updatedAt: Date.now() };
+  await writeAll(all.map(f => (f.key === key ? record : f)));
+  return record;
+}
+
+async function deleteFavorite(key) {
+  const all = await readAll();
+  const next = all.filter(f => f.key !== key);
+  if (next.length === all.length) return false;
+  await writeAll(next);
+  return true;
+}
+
+async function isFavorited(user) {
+  const key = keyOf(user);
+  if (!key) return false;
+  return !!(await getFavorite(key));
+}
+
+function searchFavorites(list, query) {
+  if (!Array.isArray(list)) return [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return list;
+  return list.filter(f => {
+    const hay = [f.handle, f.name, f.note, ...(f.tags || [])].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function sortFavorites(list, order = 'recent') {
+  if (!Array.isArray(list)) return [];
+  const copy = list.slice();
+  if (order === 'name') copy.sort((a, b) => String(a.handle || '').localeCompare(String(b.handle || '')));
+  else copy.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  return copy;
+}
+
+function rpc(action, payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'xp-favorite', action, payload }, response => {
+      const err = chrome.runtime.lastError;
+      if (err) { reject(new Error(err.message)); return; }
+      if (response && response.ok) resolve(response.result);
+      else reject(new Error((response && response.error) || '收藏操作失败'));
+    });
+  });
+}
+
+// Message-based client: routes writes through the background service worker (single writer).
+const client = {
+  list: () => rpc('list'),
+  get: key => rpc('get', { key }),
+  save: favorite => rpc('save', { favorite }),
+  update: (key, patch) => rpc('update', { key, patch }),
+  remove: key => rpc('delete', { key }),
+  isFavorited: user => rpc('isFavorited', { user })
+};
+
+module.exports = { STORAGE_KEY, keyOf, listFavorites, getFavorite, saveFavorite, updateFavorite, deleteFavorite, isFavorited, searchFavorites, sortFavorites, client };
+
+},
+"shared/rules": function(require, module, exports) {
+'use strict';
+// Keyword / highlight rules: pure decision functions, no DOM, no storage.
+
+const analytics = require('./analytics.js');
+
+const MAX_KEYWORD_LENGTH = 60;
+
+function normalizeKeyword(keyword) {
+  if (typeof keyword !== 'string') return '';
+  return keyword.trim().slice(0, MAX_KEYWORD_LENGTH);
+}
+
+function matchKeywords(text, keywords) {
+  if (!Array.isArray(keywords) || keywords.length === 0) return [];
+  const lower = String(text || '').toLowerCase();
+  const matched = [];
+  for (const kw of keywords) {
+    const k = normalizeKeyword(kw);
+    if (k && lower.includes(k.toLowerCase())) matched.push(k);
+  }
+  return matched;
+}
+
+// Priority: exclude (collapse) > include (highlight) > show.
+function evaluateFilter(post, settings) {
+  const filters = (settings && settings.filters) || {};
+  const text = post && post.text;
+  const exclude = matchKeywords(text, filters.excludeKeywords);
+  if (exclude.length) return { action: 'collapse', matched: exclude };
+  const include = matchKeywords(text, filters.includeKeywords);
+  if (include.length) return { action: 'highlight', matched: include };
+  return { action: 'show', matched: [] };
+}
+
+function evaluateHighlight(post, rules) {
+  if (!rules || rules.enabled !== true) return { triggered: false, reason: 'disabled' };
+  const metrics = post && post.metrics;
+  const engagement = analytics.calculateEngagement(metrics);
+  if (engagement === null) return { triggered: false, reason: 'unknown' };
+  if (!Number.isSafeInteger(metrics.views) || metrics.views < rules.minViews) return { triggered: false, reason: 'below-min-views' };
+  if (engagement < rules.threshold) return { triggered: false, reason: 'below-threshold' };
+  return { triggered: true, reason: 'engagement', engagement, views: metrics.views };
+}
+
+module.exports = { normalizeKeyword, matchKeywords, evaluateFilter, evaluateHighlight };
 
 },
 "content/dom": function(require, module, exports) {
@@ -423,17 +850,83 @@ function theme() {
 
 function owned(node) {
   const n = node.nodeType === 1 ? node : node.parentElement;
-  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud');
+  return !!n?.closest?.('.xp-badge,.xp-badge-line,.xp-post-badge,#xp-inline-tip,#xp-inline-hud');
 }
 
 module.exports = { el, theme, owned };
+
+},
+"content/renderer": function(require, module, exports) {
+'use strict';
+// Post badge / highlight / filter rendering.
+// DOM attachment uses well-known X patterns with graceful fallback: when a post id
+// cannot be resolved from an article, no badge is inserted (never show wrong data).
+
+const analytics = require('../shared/analytics.js');
+
+function getPostIdFromDOM(article) {
+  if (!article || typeof article.querySelectorAll !== 'function') return '';
+  for (const a of article.querySelectorAll('a[href]')) {
+    const m = String(a.getAttribute('href') || '').match(/\/status\/(\d+)/);
+    if (m) return m[1].slice(0, 40);
+  }
+  return '';
+}
+
+function fmt(n) { return n === null ? '—' : n.toLocaleString('en-US'); }
+
+function postBadgeText(post, settings) {
+  const postCfg = (settings && settings.post) || {};
+  const m = (post && post.metrics) || {};
+  let text = '赞 ' + fmt(m.likes) + ' · 转 ' + fmt(m.reposts) + ' · 评 ' + fmt(m.replies) + ' · 看 ' + fmt(m.views);
+  if (postCfg.showEngagementRate !== false) {
+    const rate = analytics.calculateEngagement(m);
+    if (rate !== null) text += ' · 互动 ' + rate.toFixed(2) + '%';
+  }
+  return text;
+}
+
+function renderPostBadge(article, post, settings, el) {
+  if ((settings && settings.post && settings.post.enabled) === false) return null;
+  const badge = el('span', 'xp-post-badge', postBadgeText(post, settings));
+  badge.dataset.xpPostId = post.id;
+  article.append(badge);
+  return badge;
+}
+
+function hasClass(node, cls) { return (' ' + (node.className || '') + ' ').includes(' ' + cls + ' '); }
+function addClass(node, cls) { if (!hasClass(node, cls)) node.className = ((node.className || '') + ' ' + cls).trim(); }
+function removeClass(node, cls) { node.className = (' ' + (node.className || '') + ' ').replace(' ' + cls + ' ', ' ').trim(); }
+
+function applyHighlight(article) { addClass(article, 'xp-highlight'); }
+function clearHighlight(article) { removeClass(article, 'xp-highlight'); }
+
+const collapseButtons = new WeakMap();
+
+function applyCollapse(article, el) {
+  addClass(article, 'xp-collapsed');
+  if (collapseButtons.has(article)) return;
+  const btn = el('button', 'xp-collapse-btn', '已折叠 · 展开');
+  btn.type = 'button';
+  btn.addEventListener('click', () => clearCollapse(article));
+  article.append(btn);
+  collapseButtons.set(article, btn);
+}
+
+function clearCollapse(article) {
+  removeClass(article, 'xp-collapsed');
+  const btn = collapseButtons.get(article);
+  if (btn) { btn.remove(); collapseButtons.delete(article); }
+}
+
+module.exports = { getPostIdFromDOM, postBadgeText, renderPostBadge, applyHighlight, clearHighlight, applyCollapse, clearCollapse };
 
 },
 "content/tooltip": function(require, module, exports) {
 'use strict';
 // Hover card: builds and positions the account detail tooltip.
 
-function createTooltip({ state, presentation, el, theme }) {
+function createTooltip({ state, presentation, analytics, favorite, el, theme }) {
   function hide() {
     if (state.tip) state.tip.hidden = true;
     state.tipBadge = null;
@@ -450,6 +943,11 @@ function createTooltip({ state, presentation, el, theme }) {
     const w = state.tip.offsetWidth, h = state.tip.offsetHeight;
     state.tip.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
     state.tip.style.top = Math.max(8, r.bottom + h + 8 < innerHeight ? r.bottom + 8 : r.top - h - 8) + 'px';
+  }
+
+  function accountAgeLabel(age) {
+    if (age.years > 0) return age.years + '年' + (age.months > 0 ? age.months + '个月' : '');
+    return age.months + '个月';
   }
 
   function show(badge) {
@@ -470,17 +968,47 @@ function createTooltip({ state, presentation, el, theme }) {
       el('div', 'xp-tip-name', u.name || u.handle),
       el('div', 'xp-tip-handle', '@' + u.handle)
     );
-    const big = el('div', 'xp-tip-count', presentation.format(u.count, 'exact'));
+    const big = el('div', 'xp-tip-count', presentation.format(u.followers, 'exact'));
     big.append(el('span', '', ' 粉丝'));
     state.tip.append(big);
+
+    const account = state.settings.account || {};
+    if (account.showTier && u.followers !== null) state.tip.append(detailRow('粉丝档位', presentation.tierLabel(u.followers)));
     if (u.following !== null) state.tip.append(detailRow('正在关注', presentation.format(u.following, 'exact')));
     if (u.posts !== null) state.tip.append(detailRow('发布数量', presentation.format(u.posts, 'exact')));
-    if (u.following !== null && u.following > 0) state.tip.append(detailRow('粉丝 / 关注比', (u.count / u.following).toLocaleString('en-US', { maximumFractionDigits: 1 })));
+    if (account.showRatio) {
+      const ratio = analytics.getFollowerRatio(u);
+      if (ratio !== null) state.tip.append(detailRow('粉丝 / 关注比', ratio.toLocaleString('en-US', { maximumFractionDigits: 1 })));
+    }
+    if (account.showAge) {
+      const age = analytics.getAccountAge(u);
+      if (age !== null) state.tip.append(detailRow('账号年龄', accountAgeLabel(age)));
+    }
     const rel = presentation.relation(u) || (u.youFollow ? '你关注了 TA' : '');
     if (rel) state.tip.append(detailRow('关注关系', rel));
     const created = new Date(u.createdAt);
     if (u.createdAt && Number.isFinite(+created)) state.tip.append(detailRow('加入 X', created.toLocaleDateString('zh-CN')));
-    state.tip.append(el('div', 'xp-tip-note', '页面响应采集 · ' + new Date(u.at).toLocaleTimeString('zh-CN', { hour12: false }) + '\n非持续监控，人数以该次响应为准'));
+
+    // Favorite toggle (XP-07). Only rendered when the message client is available.
+    if (favorite && state.settings.favorites?.enabled && favorite.keyOf(u)) {
+      const btn = el('button', 'xp-fav-btn', favorite.isFavorited(u) ? '取消收藏' : '收藏');
+      btn.type = 'button';
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        btn.disabled = true;
+        try {
+          await favorite.toggle(u);
+          btn.textContent = favorite.isFavorited(u) ? '取消收藏' : '收藏';
+        } catch (err) {
+          btn.textContent = '操作失败';
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      state.tip.append(btn);
+    }
+
+    state.tip.append(el('div', 'xp-tip-note', '页面响应采集 · ' + new Date(u.observedAt).toLocaleTimeString('zh-CN', { hour12: false }) + '\n非持续监控，人数以该次响应为准'));
     state.tip.hidden = false;
     position(badge);
   }
@@ -501,10 +1029,10 @@ function createBadge({ state, presentation, tooltip, el }) {
     badge.dataset.xpHandle = user.handle;
     badge.tabIndex = 0;
     badge.setAttribute('role', 'note');
-    badge.setAttribute('aria-label', '@' + user.handle + '，' + presentation.format(user.count, 'exact') + ' 位粉丝');
+    badge.setAttribute('aria-label', '@' + user.handle + '，' + presentation.format(user.followers, 'exact') + ' 位粉丝');
     badge.setAttribute('aria-describedby', 'xp-inline-tip');
-    const main = el('span', 'xp-count' + (state.settings.tierColors ? ' xp-tier-' + presentation.tier(user.count) : ''));
-    main.append(el('span', 'xp-people'), document.createTextNode(presentation.format(user.count, state.settings.format)), el('span', 'xp-unit', '粉丝'));
+    const main = el('span', 'xp-count' + (state.settings.tierColors ? ' xp-tier-' + presentation.tier(user.followers) : ''));
+    main.append(el('span', 'xp-people'), document.createTextNode(presentation.format(user.followers, state.settings.format)), el('span', 'xp-unit', '粉丝'));
     badge.append(main);
     const rel = presentation.relation(user);
     if (state.settings.showRelation && !compact && rel) badge.append(el('span', 'xp-relation', rel));

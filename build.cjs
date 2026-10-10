@@ -17,24 +17,33 @@ const VERSION = require('./src/version.js');
 // module id (path under src/, no extension) -> source file
 const MODULES = {
   'version': 'version.js',
+  'background': 'background.js',
   'shared/core': 'shared/core.js',
   'shared/settings': 'shared/settings.js',
   'shared/presentation': 'shared/presentation.js',
   'shared/store': 'shared/store.js',
   'shared/transport': 'shared/transport.js',
   'shared/handle': 'shared/handle.js',
+  'shared/config': 'shared/config.js',
+  'shared/tweet': 'shared/tweet.js',
+  'shared/analytics': 'shared/analytics.js',
+  'shared/rules': 'shared/rules.js',
+  'shared/exporter': 'shared/exporter.js',
+  'shared/favorites': 'shared/favorites.js',
   'content/dom': 'content/dom.js',
   'content/tooltip': 'content/tooltip.js',
   'content/badge': 'content/badge.js',
   'content/layout': 'content/layout.js',
   'content/observer': 'content/observer.js',
   'content/diagnostics': 'content/diagnostics.js',
+  'content/renderer': 'content/renderer.js',
   'content/index': 'content/index.js',
   'popup/index': 'popup/index.js',
   'preview/index': 'preview/index.js'
 };
 
 const ENTRIES = {
+  'background.js': 'background',
   'content.bundle.js': 'content/index',
   'popup.bundle.js': 'popup/index',
   'preview.bundle.js': 'preview/index'
@@ -120,8 +129,7 @@ function build() {
     fs.writeFileSync(path.join(DIST, file), bundle(entry));
   }
 
-  // standalone scripts
-  copyFile(path.join(SRC, 'background.js'), path.join(DIST, 'background.js'));
+  // standalone page-world script (not bundled)
   fs.writeFileSync(path.join(DIST, 'bridge.js'), read('page/bridge.js').replace('__XPULSE_VERSION__', VERSION));
 
   // styles & html

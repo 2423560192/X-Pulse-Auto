@@ -83,3 +83,9 @@ test('diagnostic preserves exception cause and next good response recovers',asyn
   const f=await fixture();f.row('alice');f.message({channel:'x-pulse:response:v2',version:'1.1.1',bodyText:'invalid',requestAt:Date.now()});
   assert.match(f.status().lastError,/JSON/);f.packet([{handle:'alice',count:2}]);assert.equal(f.status().lastError,'');assert.equal(f.badges().length,1);
 });
+test('post badge renders when a tweet article matches a cached post',async()=>{
+  const f=await fixture();const r=f.row('alice');r.a.setAttribute('href','/alice/status/123456');
+  f.rawPacket({data:{tweet:{__typename:'Tweet',rest_id:'123456',legacy:{full_text:'hi',favorite_count:100,reply_count:10,retweet_count:20,quote_count:5},views:{count:10000}}}});
+  const badge=f.root.all().find(n=>n.className==='xp-post-badge');
+  assert.ok(badge);assert.equal(badge.dataset.xpPostId,'123456');assert.match(badge.textContent,/赞 100/);
+});

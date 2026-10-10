@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "111",
   "name": "X Pulse · 自动粉丝徽标",
-  "version": "1.1.1",
+  "version": "2.0.0",
   "description": "浏览 X 时，自动在推文、评论和用户列表旁显示粉丝数。无需设置账号，不额外发送网络请求。",
   "permissions": [
     "storage"

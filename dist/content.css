@@ -1,0 +1,27 @@
+.xp-badge{display:inline-flex!important;align-items:center!important;gap:4px!important;flex:none!important;vertical-align:middle!important;white-space:nowrap!important;margin:0 0 0 7px!important;padding:0!important;border:0!important;font:600 11px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important;cursor:default!important;letter-spacing:0!important;max-width:100%}
+.xp-badge:focus-visible{outline:2px solid #1d9bf0;outline-offset:3px;border-radius:7px}
+.xp-count{display:inline-flex!important;align-items:center!important;gap:4px!important;padding:3px 7px!important;border:1px solid rgba(29,155,240,.20)!important;border-radius:7px!important;color:#1989cd!important;background:rgba(29,155,240,.09)!important;font-variant-numeric:tabular-nums!important;box-shadow:inset 0 1px 0 #ffffff0a}
+.xp-people{width:4px!important;height:4px!important;border-radius:100%!important;background:currentColor!important;opacity:.8!important;display:inline-block!important}
+.xp-unit{font-size:10px!important;font-weight:450!important;opacity:.8!important}
+.xp-count.xp-tier-0{color:#78838d!important;background:rgba(128,139,150,.10)!important;border-color:rgba(128,139,150,.20)!important}
+.xp-count.xp-tier-1{color:#1989cd!important}
+.xp-count.xp-tier-2{color:#15a18b!important;background:rgba(21,161,139,.09)!important;border-color:rgba(21,161,139,.21)!important}
+.xp-count.xp-tier-3{color:#be862b!important;background:rgba(212,155,43,.10)!important;border-color:rgba(212,155,43,.23)!important}
+.xp-count.xp-tier-4{color:#a67bd9!important;background:linear-gradient(110deg,rgba(157,109,216,.13),rgba(84,128,224,.09))!important;border-color:rgba(157,109,216,.25)!important}
+.xp-relation{padding:3px 5px!important;border-radius:5px!important;color:#9373d2!important;background:rgba(147,115,210,.11)!important;font-size:10px!important;font-weight:500!important}
+.xp-badge-line{display:block!important;flex:0 0 100%!important;width:100%!important;min-width:0!important;margin:3px 0 4px!important}
+.xp-badge-line>.xp-badge{margin-left:0!important}
+#xp-inline-tip{--xp-bg:#fff;--xp-text:#17232d;--xp-muted:#72808a;--xp-line:#e8eef0;--xp-accent:#128a78;position:fixed!important;z-index:2147483647!important;pointer-events:none!important;width:270px!important;max-width:calc(100vw - 16px)!important;max-height:calc(100vh - 16px)!important;overflow:hidden!important;padding:19px!important;border-radius:17px!important;border:1px solid var(--xp-line)!important;background:var(--xp-bg)!important;color:var(--xp-text)!important;box-shadow:0 16px 50px #0003!important;font:12px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important;text-align:left!important;white-space:normal!important}
+#xp-inline-tip[hidden]{display:none!important}
+#xp-inline-tip[data-theme="dark"]{--xp-bg:#141c22;--xp-text:#edf4f7;--xp-muted:#8d9ba6;--xp-line:#2a343c;--xp-accent:#7bd8c3}
+#xp-inline-tip .xp-tip-kicker{font-size:9px;letter-spacing:1.8px;color:var(--xp-accent);margin-bottom:10px}
+#xp-inline-tip .xp-tip-name{font-size:15px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#xp-inline-tip .xp-tip-handle{font-size:11px;color:var(--xp-muted)}
+#xp-inline-tip .xp-tip-count{font-size:32px;font-weight:600;letter-spacing:-1px;margin:12px 0 14px;line-height:1.2;font-variant-numeric:tabular-nums}
+#xp-inline-tip .xp-tip-count>span{font-size:11px;font-weight:400;letter-spacing:0;color:var(--xp-muted)}
+#xp-inline-tip .xp-tip-row{display:flex;justify-content:space-between;gap:12px;margin-top:7px;font-size:11px}
+#xp-inline-tip .xp-tip-row>span{color:var(--xp-muted)}
+#xp-inline-tip .xp-tip-row>strong{font-weight:550;font-variant-numeric:tabular-nums}
+#xp-inline-tip .xp-tip-note{border-top:1px solid var(--xp-line);margin-top:14px;padding-top:11px;color:var(--xp-muted);font-size:9px;white-space:pre-line}
+#xp-inline-hud{position:fixed!important;left:12px!important;bottom:12px!important;z-index:2147483647!important;padding:7px 12px!important;background:#17232dee!important;color:#ade6d9!important;border:1px solid #527c7155!important;border-radius:9px!important;font:11px/1.4 monospace!important;pointer-events:none!important}
+@media(prefers-reduced-motion:no-preference){.xp-count{transition:filter .15s ease}.xp-badge:hover .xp-count{filter:brightness(1.12)}}

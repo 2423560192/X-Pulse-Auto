@@ -1,0 +1,13 @@
+# 依赖与构建缓存
+node_modules/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

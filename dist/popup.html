@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>X Pulse</title><link rel="stylesheet" href="popup.css"></head><body>
+<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>让每一个账号，都更清晰。</p></div><span class="version">1.1.1</span></header>
+<div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>推文 · 评论 · 关注与粉丝列表</p></div>
+<main>
+<label class="row"><span>自动显示粉丝数<small>装好即用，无需指定账号</small></span><input id="enabled" data-key="enabled" type="checkbox" role="switch"></label>
+<div class="preview" aria-label="徽标样式示例"><span>示例创作者 <small>@creator</small></span><b>● 1.29万 <small>粉丝</small></b></div>
+<label class="field" for="layout">徽标位置<select id="layout" data-key="layout"><option value="auto">自动适应宽度</option><option value="inline">放在用户名旁</option><option value="below">单独一行</option></select></label>
+<label class="field" for="format">人数显示<select id="format" data-key="format"><option value="compact">紧凑：1.29万</option><option value="exact">精确：12,984</option></select></label>
+<label class="row"><span>按粉丝量配色</span><input data-key="tierColors" type="checkbox" role="switch"></label>
+<label class="row"><span>悬停显示详情<small>精确人数、关注数量、关注关系</small></span><input data-key="hoverCard" type="checkbox" role="switch"></label>
+<label class="row"><span>显示互关 / 关注了你</span><input data-key="showRelation" type="checkbox" role="switch"></label>
+<label class="row"><span>显示诊断信息<small>排查未出现徽标的问题</small></span><input data-key="debug" type="checkbox" role="switch"></label>
+<p id="diagnostic" role="status">正在检查当前标签页…</p><p id="error" role="alert"></p>
+</main><footer>不增加请求 · 无后台监测页 · 数据仅在当前页面内存中<br>首次安装或更新后，请刷新 X 页面。</footer>
+<script src="popup.bundle.js"></script></body></html>

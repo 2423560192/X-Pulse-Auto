@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "111",
+  "name": "X Pulse · 自动粉丝徽标",
+  "version": "1.1.1",
+  "description": "浏览 X 时，自动在推文、评论和用户列表旁显示粉丝数。无需设置账号，不额外发送网络请求。",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "X Pulse · 自动粉丝徽标",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content.bundle.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

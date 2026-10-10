@@ -1,0 +1,73 @@
+﻿X Pulse 1.1.1 | 2026-10-10 (refactored to src/ + dist/)
+32 tests: unit + final-bundle mocked DOM + cross-context response bridge.
+Run with: node tests\core.test.cjs ; node tests\lens.test.cjs ; node tests\bridge.test.cjs ; node tests\render.test.cjs
+No authenticated live X verification.
+
+----- core.test.cjs -----
+✔ handles: username, @name and allowed URLs only (0.8717ms)
+✔ legacy and modern GraphQL user schemas; exact integer including zero (0.4765ms)
+✔ v2 schema supported; approximate counts not accepted (0.1487ms)
+✔ integer strings accepted without treating abbreviations or missing values as counts (0.1711ms)
+✔ no confusing likes with followers, no secrets in emitted record (0.1514ms)
+✔ cycles and malformed payloads are safe (1.0767ms)
+✔ avatars restricted to HTTPS X image CDN (0.1771ms)
+✔ invalid, negative and stale/future samples rejected (0.2516ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8.6832
+----- lens.test.cjs -----
+✔ new relationship_counts fields take precedence over legacy values (1.3501ms)
+✔ legacy nested user cannot erase new-format fields (0.7815ms)
+✔ missing follower count is not invented as zero; missing following stays unknown (0.2303ms)
+✔ compact formatting does not round across unit boundaries (19.575ms)
+✔ stale packets cannot overwrite newer values; cap page memory (37.8854ms)
+✔ full signature includes handle even when two people have identical metrics (0.2608ms)
+✔ handle resolver matches exact profile link text and ignores tweet URLs (0.576ms)
+✔ settings and untrusted message values validated (0.2195ms)
+✔ raw response transport parses inside isolated module and accepts valid user (0.9904ms)
+✔ modified page-world clock does not discard every observation (0.5219ms)
+✔ malformed transport reports explicit error, not silent zero users (0.8403ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 72.0546
+----- bridge.test.cjs -----
+✔ fetch response remains readable and identical; JSON transported to isolated parser (28.914ms)
+✔ unrelated network responses are never parsed (1.0849ms)
+✔ fetch errors propagate; observer does not break host page (1.0144ms)
+✔ XHR handles JSON responses and malformed text safely (0.9578ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 35.3814
+----- render.test.cjs -----
+✔ auto decorates all known users, with no manual account selection (23.8829ms)
+✔ virtualized row reused for unknown account removes stale badge (5.5243ms)
+✔ virtualized row switches identity even when counts match (4.2835ms)
+✔ rerender never duplicates badges; updates existing user count (1.8635ms)
+✔ toggle hides and restores without deleting host content; disconnected rows cleaned (1.3429ms)
+✔ safe tooltip never interprets profile name as HTML (16.0371ms)
+✔ reported undefined core regression: manifest bundle needs no global modules (13.9206ms)
+✔ bridge fetch to isolated bundle to badge works across separate VM contexts (54.5534ms)
+✔ diagnostic preserves exception cause and next good response recovers (4.802ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 140.0359

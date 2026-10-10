@@ -14,3 +14,6 @@ desktop.ini
 
 # 发布包（附件上传到 GitHub Release，不入库）
 *.zip
+
+# 发布包解压后的本地加载目录
+x-pulse-auto-v*/

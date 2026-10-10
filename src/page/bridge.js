@@ -11,6 +11,15 @@
     'data', 'user', 'users', 'result', 'results', 'tweet', 'tweets', 'post', 'posts',
     'item', 'items', 'entry', 'entries', 'content', 'itemContent', 'tweet_results',
     'user_results', 'timeline', 'timeline_v2', 'instructions', 'instruction',
+    // 各场景 GraphQL 响应的外层容器：首页 / 搜索 / 推文详情 / 通知 / 列表 / 书签等
+    'home', 'home_timeline_urt', 'home_timeline_v2', 'search_by_raw_query', 'search_timeline',
+    'tweetResult', 'threaded_conversation_with_injections_v2', 'conversation_timeline',
+    'notifications', 'notification_timeline', 'bookmark_timeline_v2', 'favorited_tweets_urt',
+    'user_tweets', 'user_tweets_and_replies', 'media_timeline', 'list', 'lists',
+    'globalObjects', 'communityResults',
+    // 时间线条目结构（不含任何凭证字段）
+    'entryId', 'entry_id_to_replace', 'sortIndex', 'cursorType', 'value', 'responseObjects',
+    'moduleItems', 'entryType', 'itemType', 'displayType', 'tweetDisplayType', 'quoted_status_result',
     // identity
     '__typename', 'core', 'legacy', 'rest_id', 'id_str', 'id', 'screen_name', 'username', 'name', 'created_at',
     // user metrics

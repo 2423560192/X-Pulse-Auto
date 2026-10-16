@@ -22,3 +22,28 @@ test('AI timeout and HTTP errors are explicit',async()=>{
   await assert.rejects(ai.requestChat({...settings,timeout:5},[],8,(_url,init)=>new Promise((_resolve,reject)=>init.signal.addEventListener('abort',()=>reject(new Error('aborted'))))),/超时/);
   await assert.rejects(ai.requestChat(settings,[],8,async()=>new Response('bad',{status:503})),/503/);
 });
+
+test('connection probe allows reasoning output and explains an empty response', async () => {
+  let sent;
+  const empty = async (_url, init) => {
+    sent = JSON.parse(init.body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: '' }, finish_reason: 'length' }], usage: { completion_tokens: 512, completion_tokens_details: { reasoning_tokens: 512 } } }));
+  };
+  await assert.rejects(ai.testConnection(settings, empty), /结束原因 length.*输出 token 512.*推理 token 512.*额度已耗尽/);
+  assert.equal(sent.max_tokens, 512);
+});
+
+test('connection error includes safe provider detail and does not expose API key', async () => {
+  const denied = async () => new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'Model unavailable for secret' } }), { status: 404 });
+  await assert.rejects(ai.testConnection(settings, denied), /HTTP 404（model_not_found）：Model unavailable for \[已隐藏\]/);
+});
+
+test('common text content arrays are accepted', async () => {
+  const chunks = async () => new Response(JSON.stringify({ choices: [{ message: { content: [{ type: 'text', text: 'OK' }] } }] }));
+  assert.equal(await ai.testConnection(settings, chunks), true);
+});
+
+test('malformed text parts cannot mark a connection verified', async () => {
+  const malformed = async () => new Response(JSON.stringify({ choices: [{ message: { content: [{ text: { unexpected: true } }] } }] }));
+  await assert.rejects(ai.testConnection(settings, malformed), /空内容/);
+});

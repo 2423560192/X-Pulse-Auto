@@ -1,7 +1,6 @@
-X Pulse 3.0.0 | 2026-10-16
+X Pulse 4.0.0 | 2026-10-16
 Build: node build.cjs
 Tests: node --test tests/*.test.cjs
-Result: 82 passed, 0 failed.
-Coverage: bridge privacy and reply fields; user badges and account favorites; opportunity rules, scoring, AI errors, cache, CRUD, permission denial, 100-comment limit, and virtualized marker identity.
-AI connection UI: progress appears immediately; success shows a fresh timestamp; permission and API failures appear beside the button and can be retried.
-Authenticated live X extension verification has not been performed in this environment.
+Result: 94 passed, 0 failed.
+Coverage: X response bridge privacy; follower badges and independent account favorites; AI connection UI and safe provider/empty-response diagnostics; contextual demand validation and evidence; semantic cluster assignment via existing topic IDs; deduplication, cache invalidation, local aggregation and opportunity-pool confirmation; scan batch limits and virtualized markers; visible original-post text fallback; draggable floating radar with close/reopen; popup bundle smoke.
+Authenticated live X page and real configured AI service verification have not been performed in this environment.

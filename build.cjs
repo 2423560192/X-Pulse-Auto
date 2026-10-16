@@ -41,6 +41,7 @@ const MODULES = {
   'content/opportunity-ui': 'content/opportunity-ui.js',
   'content/index': 'content/index.js',
   'popup/ai-connection': 'popup/ai-connection.js',
+  'popup/demand-ui': 'popup/demand-ui.js',
   'popup/index': 'popup/index.js',
   'preview/index': 'preview/index.js'
 };

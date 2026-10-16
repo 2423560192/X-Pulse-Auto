@@ -4,10 +4,9 @@
 const legacy = require('./settings.js');
 
 const DEFAULTS = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   account: { showRatio: true, showAge: true, showTier: true },
-  favorites: { enabled: true },
-  opportunity: { badgeLevel: 'high' }
+  favorites: { enabled: true }
 };
 
 function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
@@ -18,7 +17,6 @@ function config(input = {}) {
 
   const account = { ...DEFAULTS.account };
   const favorites = { ...DEFAULTS.favorites };
-  const opportunity = { ...DEFAULTS.opportunity };
 
   if (input && typeof input === 'object') {
     if (input.account && typeof input.account === 'object') {
@@ -29,12 +27,9 @@ function config(input = {}) {
     if (input.favorites && typeof input.favorites === 'object') {
       favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
     }
-    if (input.opportunity && typeof input.opportunity === 'object') {
-      opportunity.badgeLevel = oneOf(input.opportunity.badgeLevel, ['all', 'medium', 'high'], opportunity.badgeLevel);
-    }
   }
 
-  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites, opportunity };
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites };
 }
 
 module.exports = { defaults: DEFAULTS, config, bool, oneOf };

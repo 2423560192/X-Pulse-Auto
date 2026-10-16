@@ -125,7 +125,7 @@ const observer = createObserver({ state, owned: dom.owned, schedule });
 window.addEventListener('message', handleMessage);
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.xp_v3_product || changes.xp_v3_ai)) opportunityUI.reload();
+  if (area === 'local' && (changes.xp_v3_ai || changes.xp_v4_clusters)) opportunityUI.reload();
   if (area === 'local' && changes[KEY]) {
     state.settings = config.config(changes[KEY].newValue);
     if (!state.settings.enabled) state.pending.length = 0;
@@ -136,6 +136,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, _, reply) => {
   if (message?.type === 'xp-status') reply(diagnostics.statusReply());
+  if (message?.type === 'xp-scan-page') {
+    const started = document.querySelectorAll('article[data-testid="tweet"]').length > 0;
+    if (started) opportunityUI.scan();
+    reply({ started });
+  }
 });
 
 chrome.storage.local.get(KEY).then(data => {
@@ -172,7 +177,7 @@ window.addEventListener('resize', () => {
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '3.0.0';
+module.exports = '4.0.0';
 
 },
 "shared/config": function(require, module, exports) {
@@ -182,10 +187,9 @@ module.exports = '3.0.0';
 const legacy = require('./settings.js');
 
 const DEFAULTS = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   account: { showRatio: true, showAge: true, showTier: true },
-  favorites: { enabled: true },
-  opportunity: { badgeLevel: 'high' }
+  favorites: { enabled: true }
 };
 
 function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
@@ -196,7 +200,6 @@ function config(input = {}) {
 
   const account = { ...DEFAULTS.account };
   const favorites = { ...DEFAULTS.favorites };
-  const opportunity = { ...DEFAULTS.opportunity };
 
   if (input && typeof input === 'object') {
     if (input.account && typeof input.account === 'object') {
@@ -207,12 +210,9 @@ function config(input = {}) {
     if (input.favorites && typeof input.favorites === 'object') {
       favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
     }
-    if (input.opportunity && typeof input.opportunity === 'object') {
-      opportunity.badgeLevel = oneOf(input.opportunity.badgeLevel, ['all', 'medium', 'high'], opportunity.badgeLevel);
-    }
   }
 
-  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites, opportunity };
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites };
 }
 
 module.exports = { defaults: DEFAULTS, config, bool, oneOf };
@@ -476,7 +476,8 @@ function normalizePost(raw) {
     conversationId,
     isReply: !!inReplyToId,
     isQuote: !!(legacy.is_quote_status || raw.quoted_status_result || legacy.quoted_status),
-    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000)
+    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000),
+    createdAt: String(legacy.created_at || raw.created_at || '').slice(0, 100)
   };
 }
 
@@ -667,7 +668,7 @@ function theme() {
 
 function owned(node) {
   const n = node.nodeType === 1 ? node : node.parentElement;
-  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud,.xp-opp-panel,.xp-opp-marker,.xp-opp-modal');
+  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud,.xp-opp-panel,.xp-opp-launcher,.xp-opp-marker,.xp-opp-modal');
 }
 
 module.exports = { el, theme, owned };
@@ -676,19 +677,18 @@ module.exports = { el, theme, owned };
 "content/opportunity-ui": function(require, module, exports) {
 'use strict';
 
-const opportunity = require('../shared/opportunity.js');
+const demand = require('../shared/opportunity.js');
 
 function rpc(action, payload = {}) {
   return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
     if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-    if (!response?.ok) return reject(new Error(response?.error || '商机操作失败'));
+    if (!response?.ok) return reject(new Error(response?.error || '需求机会操作失败'));
     resolve(response.result);
   }));
 }
 
 function postIdFromArticle(article) {
-  const time = article.querySelector?.('time');
-  const dated = time?.closest?.('a[href]');
+  const dated = article.querySelector?.('time')?.closest?.('a[href]');
   const links = dated ? [dated] : article.querySelectorAll?.('a[href]') || [];
   for (const link of links) {
     const match = String(link.getAttribute('href') || '').match(/\/status\/(\d{1,40})(?:[/?#]|$)/);
@@ -697,184 +697,195 @@ function postIdFromArticle(article) {
   return '';
 }
 
-function pagePostId() {
-  return String(location.pathname || '').match(/^\/[A-Za-z0-9_]{1,15}\/status\/(\d{1,40})(?:\/|$)/)?.[1] || '';
-}
-
 function createOpportunityUI({ state, el }) {
-  const shown = new Map();
-  let currentPostId = '', rootArticle = null, panel = null, modal = null;
-  let records = new Map(), scanBusy = false, attempted = new Set(), scanSignature = '', progress = null, error = '';
-  let listOpen = false, generation = 0;
-  let activeProductSnapshot = '', activeModel = '', activeEndpoint = '';
+  const markers = new Map(), clusters = new Map();
+  let panel = null, launcher = null, modal = null, busy = false, closed = false, drag = null;
+  let position = null, attempted = new Set(), scanSignature = '', progress = null, error = '', lastUrl = '';
+  const seenPageIds = new Set(), seenDomPosts = new Map();
+  const button = (label, click) => { const b = el('button', 'xp-opp-button', label); b.type = 'button'; b.addEventListener('click', click); return b; };
+  const clearMarkers = () => { for (const marker of markers.values()) marker.remove(); markers.clear(); };
+  const closeModal = () => { modal?.remove(); modal = null; };
 
-  function recordsForPost() { return [...records.values()].filter(r => r.postId === currentPostId && r.productSnapshot === activeProductSnapshot && r.model === activeModel && r.aiEndpoint === activeEndpoint); }
-  function band(score) { return score >= 80 ? 'high' : score >= 60 ? 'medium' : 'low'; }
-  function visible(r) {
-    const setting = state.settings.opportunity?.badgeLevel || 'high';
-    return setting === 'all' || (setting === 'medium' && r.opportunityScore >= 60) || r.opportunityScore >= 80;
+  function placePanel(left, top) {
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const x = Math.max(8, Math.min(window.innerWidth - rect.width - 8, left));
+    const y = Math.max(8, Math.min(window.innerHeight - rect.height - 8, top));
+    position = { left: x, top: y };
+    panel.style.setProperty('left', x + 'px', 'important');
+    panel.style.setProperty('top', y + 'px', 'important');
+    panel.style.setProperty('right', 'auto', 'important');
+    panel.style.setProperty('bottom', 'auto', 'important');
   }
-  function clearMarkers() { for (const marker of shown.values()) marker.remove(); shown.clear(); }
-  function closeModal() { modal?.remove(); modal = null; }
-  function makeButton(label, click) { const b = el('button', 'xp-opp-button', label); b.type = 'button'; b.addEventListener('click', click); return b; }
 
-  async function changeRecord(rec, patch) {
-    try { const next = await rpc('update', { id: rec.id, patch }); records.set(next.id, next); drawPanel(); if (modal) showDetail(next); }
-    catch (e) { error = e.message; drawPanel(); }
+  function startDrag(event) {
+    if (event.button !== 0 || event.target.closest?.('button')) return;
+    const rect = panel.getBoundingClientRect();
+    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+    panel.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
   }
 
-  function showDetail(rec) {
-    closeModal();
-    const wrap = el('div', 'xp-opp-modal');
-    const card = el('section', 'xp-opp-card');
-    const heading = el('h2', '', (rec.authorName || rec.authorHandle || '用户') + ' @' + (rec.authorHandle || 'unknown'));
-    card.append(heading, el('p', '', '粉丝 ' + (rec.authorFollowers ?? '未知') + ' · 关注 ' + (rec.authorFollowing ?? '未知')));
-    const rows = [
-      ['原帖', rec.parentPostText], ['评论', rec.commentText], ['需求类型', rec.opportunityType],
-      ['需求', rec.need], ['痛点', rec.painPoint], ['商机强度', rec.opportunityScore],
-      ['产品匹配度', rec.productFitScore], ['优先级', rec.priorityScore],
-      ['判断依据', rec.evidence], ['匹配理由', rec.fitReason], ['预算信号', rec.budgetSignal],
-      ['发现时间', new Date(rec.createdAt).toLocaleString('zh-CN')]
-    ];
-    for (const [label, value] of rows) {
-      const row = el('p', 'xp-opp-detail-row');
-      row.append(el('strong', '', label + '：'), el('span', '', String(value ?? '未知')));
-      card.append(row);
+  window.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    placePanel(drag.left + event.clientX - drag.x, drag.top + event.clientY - drag.y);
+  });
+  const stopDrag = event => { if (drag && event.pointerId === drag.pointerId) drag = null; };
+  window.addEventListener('pointerup', stopDrag);
+  window.addEventListener('pointercancel', stopDrag);
+  window.addEventListener('resize', () => { if (position && panel?.isConnected) placePanel(position.left, position.top); });
+
+  function articles() {
+    const found = [...document.querySelectorAll('article[data-testid="tweet"]')].map(article => ({ article, id: postIdFromArticle(article) })).filter(x => x.id);
+    for (const { article, id } of found) {
+      seenPageIds.add(id);
+      const textNode = article.querySelector?.('[data-testid="tweetText"]');
+      const text = String(textNode?.innerText || textNode?.textContent || '').trim().slice(0, 4000);
+      if (text) seenDomPosts.set(id, { id, text });
     }
+    return found;
+  }
+  function observedPost(id) {
+    const cached = state.posts.get(id), visible = seenDomPosts.get(id);
+    return cached?.text ? cached : visible ? { ...cached, ...visible } : undefined;
+  }
+  function pagePosts() {
+    articles();
+    return [...seenPageIds].map(observedPost).filter(post => post?.text);
+  }
+  function pageClusters() {
+    articles();
+    return [...clusters.values()].filter(x => x.sourceIds?.some(id => seenPageIds.has(id))).sort((a, b) => b.opportunityScore - a.opportunityScore);
+  }
+  function row(card, label, value) {
+    const p = el('p', 'xp-opp-detail-row');
+    p.append(el('strong', '', label + '：'), el('span', '', String(value || '未观察到')));
+    card.append(p);
+  }
+  function showDetail(cluster) {
+    closeModal();
+    const wrap = el('div', 'xp-opp-modal'), card = el('section', 'xp-opp-card');
+    card.append(el('h2', '', cluster.name));
+    row(card, '出现次数', cluster.demandCount);
+    row(card, '付费信号', cluster.paymentSignalCount);
+    row(card, '需求强度 / 机会评分', cluster.demandStrength + ' / ' + cluster.opportunityScore);
+    row(card, '判断', cluster.verdict);
+    row(card, '用户痛点', (cluster.painPoints || []).join('；'));
+    row(card, '目标用户', (cluster.targetUsers || []).join('；'));
+    row(card, '需求趋势', cluster.trend);
+    row(card, '当前解决方案', (cluster.currentSolutions || []).join('；'));
+    row(card, '竞争线索', cluster.competitionLevel === 'unknown' ? '讨论样本不足' : cluster.competitionLevel + ' · ' + cluster.competitionEvidence);
+    row(card, '可能可以做 / 卖', (cluster.possibleDirections || []).join('；'));
+    row(card, '典型原话', (cluster.quotes || []).map(x => '“' + x.text + '”').join('；'));
     const actions = el('div', 'xp-opp-actions');
-    actions.append(
-      makeButton(rec.favorite ? '取消收藏' : '收藏商机', () => changeRecord(rec, { favorite: !rec.favorite })),
-      makeButton('打开评论', () => window.open(rec.commentUrl, '_blank', 'noopener')),
-      makeButton('打开用户', () => rec.authorHandle && window.open('https://x.com/' + rec.authorHandle, '_blank', 'noopener')),
-      makeButton('关闭', closeModal)
-    );
+    if (!cluster.inPool) actions.append(button('加入机会池', async () => {
+      try { const updated = await rpc('addToPool', { id: cluster.id }); clusters.set(updated.id, updated); showDetail(updated); drawPanel(); }
+      catch (e) { error = e.message; drawPanel(); }
+    }));
+    else actions.append(el('span', '', '已加入机会池'));
+    if (cluster.quotes?.[0]?.url) actions.append(button('打开原讨论', () => window.open(cluster.quotes[0].url, '_blank', 'noopener')));
+    actions.append(button('关闭', closeModal));
     card.append(actions); wrap.append(card); document.documentElement.append(wrap); modal = wrap;
     wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
   }
 
   function drawPanel() {
-    if (!panel || !rootArticle) return;
+    if (!panel) return;
     panel.replaceChildren();
     const top = el('div', 'xp-opp-head');
-    top.append(el('strong', '', '商机雷达'));
-    const scanLabel = scanBusy ? '正在分析…' : attempted.size ? '分析下一批' : '扫描评论商机';
-    const scanButton = makeButton(scanLabel, scan);
-    scanButton.disabled = scanBusy;
-    top.append(scanButton);
+    top.append(el('strong', '', '需求机会雷达'));
+    const close = button('×', () => { closed = true; drag = null; render(); });
+    close.className = 'xp-opp-close'; close.setAttribute('aria-label', '关闭需求机会雷达');
+    top.append(close); top.addEventListener('pointerdown', startDrag);
     panel.append(top);
-    const list = recordsForPost();
-    const high = list.filter(r => r.opportunityScore >= 80).length;
-    const medium = list.filter(r => r.opportunityScore >= 60 && r.opportunityScore < 80).length;
-    const low = list.filter(r => r.opportunityScore < 60).length;
-    const comments = opportunity.commentsForThread([...state.posts.values()], currentPostId);
-    panel.append(el('p', 'xp-opp-stats', '已加载评论 ' + comments.length + ' · 发现商机 ' + list.length + '（高 ' + high + ' / 中 ' + medium + ' / 低 ' + low + '）'));
-    if (progress) panel.append(el('p', 'xp-opp-stats', '规则初筛 ' + progress.filtered + ' · 已分析 ' + progress.analyzed + ' · 本次 AI 调用 ' + progress.aiCount));
+    const scanButton = button(busy ? '正在分析…' : attempted.size ? '分析下一批' : '扫描当前页面', scan);
+    scanButton.disabled = busy; panel.append(scanButton);
+    const posts = pagePosts(), found = pageClusters();
+    panel.append(el('p', 'xp-opp-stats', '本页已观察帖子/评论 ' + posts.length + ' · 需求机会 ' + found.length + '（只基于已加载内容）'));
+    if (progress) panel.append(el('p', 'xp-opp-stats', '候选 ' + progress.candidates + ' · 已分析 ' + progress.analyzed + ' · 新 AI 分析 ' + progress.aiCount));
     if (error) panel.append(el('p', 'xp-opp-error', error));
-    if (list.length) {
-      panel.append(makeButton(listOpen ? '收起商机' : '查看全部商机', () => { listOpen = !listOpen; drawPanel(); }));
-      if (listOpen) {
-        const box = el('div', 'xp-opp-list');
-        for (const rec of list.sort((a, b) => b.priorityScore - a.priorityScore)) {
-          box.append(makeButton('@' + (rec.authorHandle || 'unknown') + ' · 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => showDetail(rec)));
-        }
-        panel.append(box);
-      }
+    if (found.length) {
+      const list = el('div', 'xp-opp-list');
+      for (const rec of found) list.append(button(rec.name + ' · ' + rec.demandCount + ' 次 · 机会 ' + rec.opportunityScore + (rec.inPool ? ' ✓' : ''), () => showDetail(rec)));
+      panel.append(list);
     }
+    if (position && panel.isConnected) placePanel(position.left, position.top);
   }
 
-  async function load(postId) {
-    const targetGeneration = ++generation;
+  async function load() {
     try {
-      const [found, config] = await Promise.all([rpc('list', { postId }), rpc('config')]);
-      if (targetGeneration !== generation) return;
-      activeProductSnapshot = JSON.stringify(config.product);
-      activeModel = config.ai?.model || '';
-      activeEndpoint = config.ai?.baseUrl || '';
-      for (const rec of found) if (!records.has(rec.id)) records.set(rec.id, rec);
+      const found = await rpc('list');
+      clusters.clear(); for (const rec of found) clusters.set(rec.id, rec);
       drawPanel(); render();
-    } catch (e) { if (targetGeneration === generation) { error = e.message; drawPanel(); } }
+    } catch (e) { error = e.message; drawPanel(); }
   }
 
   async function scan() {
-    if (scanBusy || !currentPostId) return;
-    scanBusy = true; error = ''; drawPanel();
-    const scanPostId = currentPostId;
+    if (busy) return;
+    const scanUrl = location.href;
+    busy = true; error = ''; drawPanel();
     try {
       await rpc('ready');
       const config = await rpc('config');
-      activeProductSnapshot = JSON.stringify(config.product);
-      activeModel = config.ai?.model || '';
-      activeEndpoint = config.ai?.baseUrl || '';
-      const nextSignature = JSON.stringify([config.product, config.ai?.baseUrl, config.ai?.model]);
-      if (nextSignature !== scanSignature) { scanSignature = nextSignature; attempted = new Set(); }
-      const posts = [...state.posts.values()];
-      const root = state.posts.get(currentPostId);
-      if (!root?.text) throw new Error('尚未捕获原帖内容，请刷新帖子并等待加载');
-      const comments = opportunity.commentsForThread(posts, currentPostId);
-      const eligible = comments.filter(p => opportunity.ruleMatch(p.text, config.product));
-      const candidateKey = p => JSON.stringify([p.id, p.text, root.text, state.posts.get(p.inReplyToId)?.text || '']);
-      const selected = eligible.filter(p => !attempted.has(candidateKey(p))).slice(0, 100);
-      if (!selected.length) { error = eligible.length ? '当前已加载的候选评论均已分析' : '当前已加载评论中没有命中需求规则'; return; }
-      progress = { filtered: eligible.length, analyzed: 0, aiCount: 0 };
+      if (location.href !== scanUrl) return;
+      const signature = JSON.stringify([config.ai?.baseUrl, config.ai?.model]);
+      if (signature !== scanSignature) { scanSignature = signature; attempted = new Set(); }
+      const posts = pagePosts().filter(p => demand.scanCandidate(p.text));
+      const candidateKey = p => JSON.stringify([p.id, p.text, observedPost(p.inReplyToId)?.text || '']);
+      const selected = posts.filter(p => !attempted.has(candidateKey(p))).slice(0, 100);
+      if (!selected.length) { error = posts.length ? '当前已显示的讨论均已分析；滚动加载更多后再试' : '当前页面没有可分析的讨论'; return; }
+      progress = { candidates: posts.length, analyzed: 0, aiCount: 0 };
       for (let offset = 0; offset < selected.length; offset += 10) {
-        const batch = selected.slice(offset, offset + 10).map(p => {
-          const user = state.cache.get(p.authorHandle) || {};
-          return {
-            comment_id: p.id, post_id: currentPostId, comment: p.text, parent_post: root.text,
-            reply_parent: state.posts.get(p.inReplyToId)?.text || '',
-            author: { id: p.authorId, handle: p.authorHandle, name: p.authorName,
-              followers: user.followers ?? null, following: user.following ?? null }
-          };
-        });
-        const response = await rpc('analyze', { items: batch });
-        if (scanPostId !== currentPostId) return;
-        for (const result of response.results) {
-          for (const [id, rec] of records) if (rec.commentId === result.commentId && rec.productSnapshot === activeProductSnapshot && rec.model === activeModel && rec.aiEndpoint === activeEndpoint) records.delete(id);
-          if (result.opportunity) records.set(result.opportunity.id, result.opportunity);
-        }
-        for (const p of selected.slice(offset, offset + 10)) attempted.add(candidateKey(p));
-        progress.analyzed += batch.length;
-        progress.aiCount += response.aiCount;
+        if (location.href !== scanUrl) return;
+        const batchPosts = selected.slice(offset, offset + 10);
+        const items = batchPosts.map(p => ({ post_id: p.id, text: p.text,
+          parent_text: observedPost(p.inReplyToId)?.text || '', created_at: p.createdAt || '', author_handle: p.authorHandle }));
+        const response = await rpc('analyze', { items });
+        if (location.href !== scanUrl) return;
+        for (const rec of response.clusters) clusters.set(rec.id, rec);
+        for (const p of batchPosts) attempted.add(candidateKey(p));
+        progress.analyzed += batchPosts.length; progress.aiCount += response.aiCount;
         drawPanel(); render();
       }
+      await load();
     } catch (e) { error = e.message; }
-    finally { scanBusy = false; drawPanel(); render(); }
+    finally { busy = false; drawPanel(); render(); }
   }
 
   function render() {
-    const id = pagePostId();
-    if (id !== currentPostId) {
-      currentPostId = id; rootArticle = null; panel?.remove(); panel = null;
-      clearMarkers(); closeModal(); records = new Map(); attempted = new Set(); scanSignature = ''; progress = null; error = ''; listOpen = false; activeProductSnapshot = ''; activeModel = ''; activeEndpoint = '';
-      if (id) load(id);
+    if (location.href !== lastUrl) { lastUrl = location.href; seenPageIds.clear(); seenDomPosts.clear(); attempted = new Set(); progress = null; error = ''; closeModal(); load(); }
+    const visible = articles();
+    if (!visible.length) { panel?.remove(); launcher?.remove(); clearMarkers(); return; }
+    if (!panel) panel = el('section', 'xp-opp-panel xp-opp-floating');
+    if (!launcher) {
+      launcher = button('需求雷达', () => { closed = false; render(); });
+      launcher.className = 'xp-opp-launcher';
+      launcher.setAttribute('aria-label', '打开需求机会雷达');
     }
-    if (!id) { clearMarkers(); panel?.remove(); panel = null; return; }
-    const articles = document.querySelectorAll('article[data-testid="tweet"]');
-    const byArticle = new Map();
-    for (const article of articles) byArticle.set(article, postIdFromArticle(article));
-    const root = [...byArticle].find(([, postId]) => postId === id)?.[0] || null;
-    if (root !== rootArticle || (panel && !panel.isConnected)) {
-      panel?.remove(); rootArticle = root; panel = null;
-      if (root) { panel = el('section', 'xp-opp-panel'); root.append(panel); drawPanel(); }
+    if (closed) {
+      panel.remove();
+      if (launcher.parentElement !== document.documentElement) document.documentElement.append(launcher);
+    } else {
+      launcher.remove();
+      if (panel.parentElement !== document.documentElement) document.documentElement.append(panel);
     }
-    const byComment = new Map(recordsForPost().map(r => [r.commentId, r]));
-    for (const [article, marker] of shown) {
-      if (!article.isConnected || !byComment.has(byArticle.get(article)) || !visible(byComment.get(byArticle.get(article)))) { marker.remove(); shown.delete(article); }
+    const byPost = new Map();
+    for (const rec of pageClusters()) for (const id of rec.sourceIds) byPost.set(id, rec);
+    for (const [article, marker] of markers) {
+      const id = postIdFromArticle(article);
+      if (!article.isConnected || !byPost.has(id) || marker.dataset.xpPostId !== id) { marker.remove(); markers.delete(article); }
     }
-    for (const [article, postId] of byArticle) {
-      const rec = byComment.get(postId);
-      if (!rec || !visible(rec)) continue;
-      const prior = shown.get(article);
-      if (prior?.dataset.xpCommentId === postId && prior.isConnected) continue;
-      prior?.remove();
-      const marker = makeButton('🔥 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => showDetail(rec));
-      marker.className = 'xp-opp-marker xp-opp-' + band(rec.opportunityScore);
-      marker.dataset.xpCommentId = postId;
-      article.append(marker); shown.set(article, marker);
+    for (const { article, id } of visible) {
+      const rec = byPost.get(id);
+      if (!rec || markers.has(article)) continue;
+      const marker = button('需求：' + rec.name, () => showDetail(rec));
+      marker.className = 'xp-opp-marker'; marker.dataset.xpPostId = id;
+      article.append(marker); markers.set(article, marker);
     }
+    drawPanel();
   }
 
-  return { render, postIdFromArticle, scan, reload: () => currentPostId && load(currentPostId) };
+  return { render, scan, postIdFromArticle, reload: load };
 }
 
 module.exports = createOpportunityUI;
@@ -882,49 +893,17 @@ module.exports = createOpportunityUI;
 },
 "shared/opportunity": function(require, module, exports) {
 'use strict';
-// Pure rules, reply selection, AI result validation, and deterministic scoring.
+// AI judges meaning; local code validates claims and aggregates observed evidence.
 
-const TYPES = new Set(['tool_request', 'solution_request', 'api_request', 'purchase_intent', 'service_request', 'pain_point', 'outsourcing', 'collaboration', 'recommendation', 'other', 'not_opportunity']);
-const NEED = /有没有|求推荐|推荐一下|什么工具|有什么工具|找一个|寻找|求一个|哪里有|谁能|有没有人做|需要|求助|怎么解决|looking for|recommend|need a|any tool|how can i/i;
-const TOOL = /工具|软件|平台|saas|api|插件|系统|自动化|ai|app|service|integration/i;
-const PAIN = /太麻烦|效率低|人工|耗时|不会|做不出来|成本高|太贵|一直失败|很难|痛点|费时|slow|expensive|struggling|difficult/i;
-const COMMERCIAL = /多少钱|价格|购买|付费|收费|报价|预算|采购|合作|外包|付钱|pay|buy|price|budget|hire/i;
-const TRIVIAL = /^(?:哈+|确实|赞|支持|第一|6+|牛|牛逼|👍+|😂+|🤣+|🔥+)$/i;
+const TYPES = new Set(['tool_request', 'service_request', 'solution_search', 'pain_point', 'repetitive_work', 'payment_intent', 'other']);
+const COMPETITION = new Set(['high', 'medium', 'low', 'unknown']);
+const TRIVIAL = /^(?:哈+|哈哈+|确实|赞|支持|第一|6+|牛|👍+|😂+|🤣+|🔥+|yes|ok|thanks)$/i;
+const SPAM = /加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i;
+const MONEY = /预算|价格|多少钱|付费|给钱|花钱|购买|买|采购|报价|收费|订阅|pay|paid|buy|purchase|budget|price|cost|hire|spend|bucks|dollars|\$|¥|￥/i;
 
-function ruleMatch(text, product = {}) {
+function scanCandidate(text) {
   const value = String(text || '').trim();
-  if (!value || value.length < 2 || TRIVIAL.test(value) || !/[\p{L}\p{N}]/u.test(value)) return false;
-  if (/加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i.test(value)) return false;
-  const excluded = Array.isArray(product.excludeKeywords) ? product.excludeKeywords : [];
-  if (excluded.some(k => k && value.toLowerCase().includes(String(k).toLowerCase()))) return false;
-  return NEED.test(value) || PAIN.test(value) || COMMERCIAL.test(value) || (TOOL.test(value) && /求|找|需要|推荐|有没有|can|need|looking/i.test(value));
-}
-
-function belongsToThread(post, rootId, byId) {
-  if (!post?.isReply || post.isQuote || post.id === rootId) return false;
-  if (post.conversationId === rootId) return true;
-  const visited = new Set([post.id]);
-  let parentId = post.inReplyToId;
-  for (let depth = 0; parentId && depth < 30; depth++) {
-    if (parentId === rootId) return true;
-    if (visited.has(parentId)) return false;
-    visited.add(parentId);
-    parentId = byId.get(parentId)?.inReplyToId;
-  }
-  return false;
-}
-
-function commentsForThread(posts, rootId) {
-  const byId = new Map(posts.map(p => [p.id, p]));
-  return posts.filter(p => belongsToThread(p, rootId, byId)).sort((a, b) => (a.observedAt || 0) - (b.observedAt || 0));
-}
-
-function validProduct(p) {
-  return !!(p && p.enabled && ['name', 'description', 'problem', 'targetUsers', 'capabilities'].every(k => typeof p[k] === 'string' && p[k].trim()));
-}
-
-function signature(comment, product, model, endpoint) {
-  return JSON.stringify([comment.id, comment.text, comment.parentPost || '', comment.replyParent || '', product, model, endpoint]);
+  return value.length >= 4 && !TRIVIAL.test(value) && !SPAM.test(value) && /[\p{L}\p{N}]/u.test(value);
 }
 
 function parseAI(text) {
@@ -932,47 +911,81 @@ function parseAI(text) {
   try { return JSON.parse(cleaned); } catch { throw new Error('AI 返回的不是有效 JSON'); }
 }
 
-function score(result) {
-  const urgency = { high: 100, medium: 50, low: 0, unknown: 0 }[result.urgency];
-  const opportunityScore = Math.round(result.intent_score * .4 + result.pain_score * .25 + result.commercial_score * .2 + urgency * .15);
-  const priorityScore = Math.round((opportunityScore * .6 + result.product_fit_score * .4) * 10) / 10;
-  return { opportunityScore, priorityScore };
-}
-
-function validateResult(raw, requested) {
-  if (!raw || typeof raw !== 'object' || typeof raw.comment_id !== 'string' || !requested.has(raw.comment_id)) throw new Error('AI 结果缺少对应评论 ID');
-  if (typeof raw.is_opportunity !== 'boolean' || !TYPES.has(raw.opportunity_type)) throw new Error('AI 商机类型无效');
-  for (const field of ['intent_score', 'pain_score', 'commercial_score', 'product_fit_score']) {
-    if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
-  }
-  if (!['high', 'medium', 'low', 'unknown'].includes(raw.urgency)) throw new Error('AI 紧迫度无效');
-  if (!Number.isFinite(raw.confidence) || raw.confidence < 0 || raw.confidence > 1) throw new Error('AI 置信度无效');
-  for (const field of ['need', 'pain_point', 'budget_signal', 'fit_reason', 'evidence']) {
-    if (typeof raw[field] !== 'string' || raw[field].length > 1000) throw new Error('AI 字段无效：' + field);
-  }
-  const source = requested.get(raw.comment_id);
-  if (!raw.is_opportunity && raw.opportunity_type !== 'not_opportunity') throw new Error('AI 非商机类型矛盾');
-  if (raw.is_opportunity && (!raw.need.trim() || !raw.fit_reason.trim())) throw new Error('AI 商机缺少需求或匹配理由');
-  if (raw.is_opportunity && (!raw.evidence.trim() || ![source.comment, source.parent_post, source.reply_parent || ''].some(t => t.includes(raw.evidence)))) throw new Error('AI 判断依据不在原文中');
-  if (raw.is_opportunity && raw.opportunity_type === 'not_opportunity') throw new Error('AI 商机类型矛盾');
-  if (raw.budget_signal.toLowerCase() !== 'unknown' && !/预算|价格|多少钱|付费|购买|买|采购|报价|收费|pay|buy|budget|price|cost/i.test(source.comment)) throw new Error('评论没有明确预算或付费信号');
-  return { ...raw, ...score(raw) };
-}
-
-function validateBatch(parsed, items) {
-  if (!parsed || !Array.isArray(parsed.results)) throw new Error('AI 缺少 results 数组');
-  const requested = new Map(items.map(x => [x.comment_id, x]));
-  if (parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+function validateBatch(parsed, items, clusters = []) {
+  if (!parsed || !Array.isArray(parsed.results) || parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+  const requested = new Map(items.map(x => [String(x.post_id), x]));
+  const existing = new Set(clusters.map(x => x.id));
   const seen = new Set();
   return parsed.results.map(raw => {
-    const result = validateResult(raw, requested);
-    if (seen.has(result.comment_id)) throw new Error('AI 返回重复评论');
-    seen.add(result.comment_id);
-    return result;
+    const id = raw?.post_id;
+    if (typeof id !== 'string' || !requested.has(id) || seen.has(id)) throw new Error('AI 返回缺失或重复的帖子 ID');
+    seen.add(id);
+    if (typeof raw.is_demand !== 'boolean') throw new Error('AI 缺少需求判断');
+    if (!raw.is_demand) return { post_id: id, is_demand: false };
+    if (!TYPES.has(raw.demand_type)) throw new Error('AI 需求类型无效');
+    if (typeof raw.cluster_id !== 'string' || (raw.cluster_id && !existing.has(raw.cluster_id))) throw new Error('AI 聚类 ID 无效');
+    for (const field of ['cluster_name', 'need', 'pain_point', 'target_users', 'current_solution', 'solution_evidence', 'need_evidence', 'payment_evidence', 'competition_evidence']) {
+      if (typeof raw[field] !== 'string' || raw[field].length > 500) throw new Error('AI 字段无效：' + field);
+    }
+    if (raw.cluster_name.length > 100) throw new Error('需求名称过长');
+    if (!raw.cluster_name.trim() || !raw.need.trim() || !raw.need_evidence.trim()) throw new Error('AI 需求缺少名称或原话证据');
+    const source = requested.get(id);
+    if (!source.text.includes(raw.need_evidence)) throw new Error('需求证据不在帖子原文中');
+    if (raw.payment_evidence && (!source.text.includes(raw.payment_evidence) || !MONEY.test(raw.payment_evidence))) throw new Error('付费信号缺少原文依据');
+    if (raw.solution_evidence && ![source.text, source.parent_text || ''].some(x => x.includes(raw.solution_evidence))) throw new Error('现有方案证据不在讨论中');
+    if (raw.current_solution && !raw.solution_evidence) throw new Error('现有方案缺少证据');
+    if (!COMPETITION.has(raw.competition_level)) throw new Error('竞争程度无效');
+    if (raw.competition_level !== 'unknown' && (!raw.competition_evidence || ![source.text, source.parent_text || ''].some(x => x.includes(raw.competition_evidence)))) throw new Error('竞争判断缺少讨论证据');
+    if (!Array.isArray(raw.directions) || raw.directions.length < 1 || raw.directions.length > 3 || raw.directions.some(x => typeof x !== 'string' || !x.trim() || x.length > 100)) throw new Error('可能方向无效');
+    for (const field of ['demand_strength', 'pain_score', 'payment_score']) {
+      if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
+    }
+    if (!raw.payment_evidence && raw.payment_score !== 0) throw new Error('无付费证据时付费分数必须为 0');
+    return { ...raw, cluster_name: raw.cluster_name.trim(), directions: raw.directions.map(x => x.trim()) };
   });
 }
 
-module.exports = { ruleMatch, belongsToThread, commentsForThread, validProduct, signature, parseAI, score, validateResult, validateBatch, TYPES };
+function normalizeName(value) { return String(value || '').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ''); }
+const average = (items, key) => items.length ? Math.round(items.reduce((sum, x) => sum + x[key], 0) / items.length) : 0;
+function unique(values, limit) { return [...new Set(values.map(x => String(x || '').trim()).filter(Boolean))].slice(0, limit); }
+
+function trendOf(items) {
+  const dates = items.map(x => Date.parse(x.createdAt || '')).filter(Number.isFinite);
+  if (dates.length < 5 || Math.max(...dates) - Math.min(...dates) < 14 * 86400000) return '样本不足';
+  const end = Math.max(...dates);
+  const recent = dates.filter(x => x > end - 7 * 86400000).length;
+  const prior = dates.filter(x => x <= end - 7 * 86400000 && x > end - 14 * 86400000).length;
+  if (!prior) return '样本不足';
+  return '已扫描样本：' + (recent > prior * 1.2 ? '上升' : recent < prior * .8 ? '下降' : '持平') + '（近 7 天 ' + recent + ' / 前 7 天 ' + prior + '）';
+}
+
+function summarizeCluster(meta, items, previous = {}) {
+  const demandCount = items.length;
+  const demandStrength = average(items, 'demandStrength');
+  const painScore = average(items, 'painScore');
+  const paymentSignalCount = items.filter(x => x.paymentEvidence).length;
+  const paymentScore = average(items, 'paymentScore');
+  const frequencyScore = Math.round(Math.min(100, Math.log2(demandCount + 1) / Math.log2(20) * 100));
+  const competition = items.find(x => x.competitionLevel !== 'unknown' && x.competitionEvidence);
+  const competitionLevel = competition?.competitionLevel || 'unknown';
+  const competitionGap = { high: 20, medium: 50, low: 80, unknown: 50 }[competitionLevel];
+  const opportunityScore = Math.round(demandStrength * .35 + frequencyScore * .2 + painScore * .2 + paymentScore * .2 + competitionGap * .05);
+  const verdict = demandCount < 3 ? '初步线索，继续收集样本' : opportunityScore >= 70 ? '这个需求值得关注' : opportunityScore >= 50 ? '值得持续观察' : '暂缓投入';
+  return {
+    ...meta, name: meta.name || items[0]?.clusterName || '未命名需求', demandCount, paymentSignalCount,
+    demandStrength, painScore, paymentScore, frequencyScore, opportunityScore, verdict,
+    competitionLevel, competitionEvidence: competition?.competitionEvidence || '',
+    painPoints: unique(items.map(x => x.painPoint), 4), targetUsers: unique(items.map(x => x.targetUsers), 4),
+    currentSolutions: unique(items.map(x => x.currentSolution), 4),
+    possibleDirections: unique(items.flatMap(x => x.directions), 5),
+    quotes: items.slice().sort((a, b) => b.demandStrength - a.demandStrength).slice(0, 3).map(x => ({ text: x.needEvidence, url: x.url, postId: x.postId })),
+    sourceIds: items.map(x => x.postId), trend: trendOf(items),
+    inPool: !!previous.inPool, favorite: !!previous.favorite, note: previous.note || '', tags: previous.tags || [],
+    firstSeenAt: previous.firstSeenAt || Date.now(), updatedAt: Date.now()
+  };
+}
+
+module.exports = { scanCandidate, parseAI, validateBatch, normalizeName, summarizeCluster, trendOf };
 
 },
 "content/tooltip": function(require, module, exports) {

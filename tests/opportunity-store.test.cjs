@@ -1,62 +1,92 @@
-const {test}=require('node:test');
-const assert=require('node:assert/strict');
-const store=require('../src/shared/opportunity-store.js');
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const store = require('../src/shared/opportunity-store.js');
 
-let data={};
-global.chrome={storage:{local:{get:async key=>({[key]:data[key]}),set:async values=>{data={...data,...values};}}}};
-const product={enabled:true,name:'视频工具',description:'批量生产视频',problem:'制作太慢',targetUsers:'工作室',capabilities:'批量制作',keywords:['AI视频'],excludeKeywords:[],budget:''};
-const ai={baseUrl:'https://example.com/v1',model:'test-model',apiKey:'secret',temperature:.2,timeout:30000};
-const input=[{comment_id:'2',post_id:'1',comment:'有没有推荐的 AI 视频工具？',parent_post:'讨论 AI 视频',reply_parent:'',author:{id:'3',handle:'creator',name:'创作者',followers:100,following:10}}];
-let calls=0;
-const fetchImpl=async(_url,init)=>{
+let data = {}, calls = 0;
+global.chrome = { storage: { local: {
+  get: async key => ({ [key]: data[key] }),
+  set: async values => { data = { ...data, ...values }; }
+} } };
+const ai = { baseUrl: 'https://example.com/v1', model: 'model-a', apiKey: 'secret', temperature: .2, timeout: 30000 };
+const input = [
+  { post_id: '2', text: '有没有 AI 视频批量工具', parent_text: '', created_at: '2026-10-16', author_handle: 'alice' },
+  { post_id: '3', text: '每天做几十条视频太累了', parent_text: '', created_at: '2026-10-16', author_handle: 'bob' }
+];
+const fetchImpl = async (_url, init) => {
   calls++;
-  const body=JSON.parse(init.body);
-  const items=JSON.parse(body.messages[1].content).comments;
-  const results=items.map(x=>({comment_id:x.comment_id,is_opportunity:true,opportunity_type:'tool_request',intent_score:90,pain_score:70,commercial_score:50,urgency:'high',product_fit_score:88,need:'找视频工具',pain_point:'',budget_signal:'unknown',fit_reason:'符合目标客户',evidence:'推荐的 AI 视频工具',confidence:.9}));
-  return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({results})}}]}));
+  const prompt = JSON.parse(JSON.parse(init.body).messages[1].content);
+  assert.equal('product' in prompt, false);
+  const existing = prompt.existing_clusters[0];
+  const results = prompt.discussions.map(x => ({
+    post_id: x.post_id, is_demand: true, cluster_id: existing?.id || '', cluster_name: 'AI 视频批量生产需求',
+    demand_type: 'tool_request', need: '批量制作视频', pain_point: '制作耗时', target_users: '视频创作者',
+    current_solution: '', solution_evidence: '', need_evidence: x.text,
+    payment_evidence: '', demand_strength: 90, pain_score: 80, payment_score: 0,
+    competition_level: 'unknown', competition_evidence: '', directions: ['AI 视频批量生产工具']
+  }));
+  return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ results }) } }] }));
 };
-async function setup(){data={};calls=0;await store.saveProduct(product);await store.saveAI(ai);await store.markVerified();}
+async function setup() { data = { xp_v3_product: { name: '旧产品' }, xp_v3_opportunities: [{ id: 'old' }] }; calls = 0; await store.saveAI(ai); await store.markVerified(); }
 
-test('configuration keeps API key local and requires product plus tested AI',async()=>{
-  data={};
-  await assert.rejects(store.ready(),/产品/);
-  await store.saveProduct(product);
+test('AI connection is sufficient; old product configuration remains untouched and hidden from new config', async () => {
+  data = {};
+  await assert.rejects(store.ready(), /AI/);
   await store.saveAI(ai);
-  await assert.rejects(store.ready(),/测试连接/);
-  const config=await store.getConfig();
-  assert.equal(config.ai.hasKey,true);
-  assert.equal('apiKey' in config.ai,false);
+  await assert.rejects(store.ready(), /测试连接/);
+  const config = await store.getConfig();
+  assert.equal(config.ai.hasKey, true);
+  assert.equal('apiKey' in config.ai, false);
+  assert.equal('product' in config, false);
   await store.markVerified();
   await store.ready();
 });
 
-test('analysis cache, product change, local CRUD and delete',async()=>{
+test('similar discussions form one demand cluster; only user confirmation enters the pool', async () => {
   await setup();
-  const first=await store.analyzeBatch(input,fetchImpl);
-  assert.equal(first.aiCount,1);assert.equal(calls,1);
-  const rec=first.results[0].opportunity;
-  assert.equal(rec.authorFollowers,100);
-  assert.equal((await store.list('1')).length,1);
-  const cached=await store.analyzeBatch(input,fetchImpl);
-  assert.equal(cached.aiCount,0);assert.equal(calls,1);
-  const updated=await store.update(rec.id,{favorite:true,note:'跟进',tags:'视频,重点'});
-  assert.equal(updated.favorite,true);assert.deepEqual(updated.tags,['视频','重点']);
-  const changedContext=await store.analyzeBatch([{...input[0],parent_post:'更新后的讨论 AI 视频'}],fetchImpl);
-  assert.equal(changedContext.aiCount,1);assert.equal(calls,2);
-  assert.equal((await store.list()).length,1);
-  assert.equal(changedContext.results[0].opportunity.favorite,true);
-  await store.saveProduct({...product,name:'新产品'});
-  const changed=await store.analyzeBatch(input,fetchImpl);
-  assert.equal(changed.aiCount,1);assert.equal(calls,3);
-  assert.notEqual(changed.results[0].opportunity.id,rec.id);
-  assert.equal(await store.remove(changedContext.results[0].opportunity.id),true);
-  assert.equal((await store.list()).length,1);
+  const first = await store.analyzeBatch(input, fetchImpl);
+  assert.equal(first.aiCount, 2);
+  assert.equal(calls, 1);
+  const clusters = await store.list();
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].demandCount, 2);
+  assert.equal((await store.pool()).length, 0);
+  assert.deepEqual(clusters[0].sourceIds.sort(), ['2', '3']);
+  const cached = await store.analyzeBatch(input, fetchImpl);
+  assert.equal(cached.aiCount, 0);
+  assert.equal(calls, 1);
+  const third = await store.analyzeBatch([{ post_id: '4', text: '怎么自动做短视频', author_handle: 'carol' }], fetchImpl);
+  assert.equal(third.aiCount, 1);
+  assert.equal((await store.list())[0].demandCount, 3);
+  const id = clusters[0].id;
+  await assert.rejects(store.update(id, { note: '先做 MVP' }), /加入机会池/);
+  await store.addToPool(id);
+  assert.equal((await store.pool()).length, 1);
+  await store.update(id, { note: '先做 MVP', tags: '视频,高潜力', favorite: true });
+  assert.equal((await store.pool())[0].note, '先做 MVP');
+  assert.equal(await store.remove(id), true);
+  assert.equal((await store.pool()).length, 0);
+  assert.equal((await store.list()).length, 1);
+  assert.equal(data.xp_v3_product.name, '旧产品');
+  assert.equal(data.xp_v3_opportunities[0].id, 'old');
 });
 
-test('invalid batch limits and comment IDs are rejected before AI calls',async()=>{
+test('model or source context changes invalidate classification cache without duplicating source counts', async () => {
   await setup();
-  await assert.rejects(store.analyzeBatch([],fetchImpl),/1 至 10/);
-  await assert.rejects(store.analyzeBatch(Array(11).fill(input[0]),fetchImpl),/1 至 10/);
-  await assert.rejects(store.analyzeBatch([{...input[0],comment_id:'bad'}],fetchImpl),/评论数据/);
-  assert.equal(calls,0);
+  await store.analyzeBatch([input[0]], fetchImpl);
+  await store.analyzeBatch([{ ...input[0], parent_text: '新的原帖上下文' }], fetchImpl);
+  assert.equal(calls, 2);
+  assert.equal((await store.list())[0].demandCount, 1);
+  await store.saveAI({ ...ai, model: 'model-b' });
+  await store.markVerified();
+  await store.analyzeBatch([input[0]], fetchImpl);
+  assert.equal(calls, 3);
+  assert.equal((await store.list())[0].demandCount, 1);
+});
+
+test('invalid batch sizes and duplicate IDs fail before AI', async () => {
+  await setup();
+  await assert.rejects(store.analyzeBatch([], fetchImpl), /1 至 10/);
+  await assert.rejects(store.analyzeBatch(Array(11).fill(input[0]), fetchImpl), /1 至 10/);
+  await assert.rejects(store.analyzeBatch([input[0], input[0]], fetchImpl), /重复/);
+  assert.equal(calls, 0);
 });

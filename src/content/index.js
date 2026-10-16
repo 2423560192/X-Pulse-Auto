@@ -120,7 +120,7 @@ const observer = createObserver({ state, owned: dom.owned, schedule });
 window.addEventListener('message', handleMessage);
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.xp_v3_product || changes.xp_v3_ai)) opportunityUI.reload();
+  if (area === 'local' && (changes.xp_v3_ai || changes.xp_v4_clusters)) opportunityUI.reload();
   if (area === 'local' && changes[KEY]) {
     state.settings = config.config(changes[KEY].newValue);
     if (!state.settings.enabled) state.pending.length = 0;
@@ -131,6 +131,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, _, reply) => {
   if (message?.type === 'xp-status') reply(diagnostics.statusReply());
+  if (message?.type === 'xp-scan-page') {
+    const started = document.querySelectorAll('article[data-testid="tweet"]').length > 0;
+    if (started) opportunityUI.scan();
+    reply({ started });
+  }
 });
 
 chrome.storage.local.get(KEY).then(data => {

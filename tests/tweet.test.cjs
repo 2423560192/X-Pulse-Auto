@@ -42,3 +42,7 @@ test('reply metadata distinguishes direct replies, nested replies and quotes',()
   assert.equal(posts.find(x=>x.id==='33').conversationId,'11');
   assert.equal(posts.find(x=>x.id==='44').isQuote,true);
 });
+test('post creation date is retained for sample trend calculations',()=>{
+  const raw=sampleTweet('55');raw.legacy.created_at='Fri Oct 16 14:20:00 +0000 2026';
+  assert.equal(tweet.normalizePost(raw).createdAt,raw.legacy.created_at);
+});

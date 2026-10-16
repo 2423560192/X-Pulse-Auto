@@ -1,172 +1,158 @@
 'use strict';
-// All records and analysis cache remain in extension-local storage.
+// Local evidence, AI cache, demand clusters, and user-confirmed opportunity pool.
 
-const opportunity = require('./opportunity.js');
+const demand = require('./opportunity.js');
 const aiClient = require('./ai-client.js');
 const core = require('./core.js');
 
-const KEYS = { product: 'xp_v3_product', ai: 'xp_v3_ai', records: 'xp_v3_opportunities', cache: 'xp_v3_analysis' };
-const clean = (value, max = 1000) => String(value || '').trim().slice(0, max);
-const words = value => Array.isArray(value) ? value.map(x => clean(x, 60)).filter(Boolean).slice(0, 50) : String(value || '').split(/[,，\n]/).map(x => clean(x, 60)).filter(Boolean).slice(0, 50);
+const KEYS = { ai: 'xp_v3_ai', discoveries: 'xp_v4_discoveries', clusters: 'xp_v4_clusters', cache: 'xp_v4_analysis' };
+const clean = (value, max = 1000) => String(value ?? '').trim().slice(0, max);
+const words = value => Array.isArray(value) ? value.map(x => clean(x, 60)).filter(Boolean).slice(0, 30) : String(value || '').split(/[,，\n]/).map(x => clean(x, 60)).filter(Boolean).slice(0, 30);
 
 function hash(text) {
   let a = 2166136261, b = 2246822519;
-  for (let i = 0; i < text.length; i++) {
-    a = Math.imul(a ^ text.charCodeAt(i), 16777619);
-    b = Math.imul(b ^ text.charCodeAt(i), 3266489917);
-  }
+  for (let i = 0; i < text.length; i++) { a = Math.imul(a ^ text.charCodeAt(i), 16777619); b = Math.imul(b ^ text.charCodeAt(i), 3266489917); }
   return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
 }
-
-async function read(key, fallback) {
-  const data = await chrome.storage.local.get(key);
-  return data[key] ?? fallback;
-}
+async function read(key, fallback) { const data = await chrome.storage.local.get(key); return data[key] ?? fallback; }
 async function write(key, value) { await chrome.storage.local.set({ [key]: value }); }
 
 async function getConfig() {
-  const [product, ai] = await Promise.all([read(KEYS.product, null), read(KEYS.ai, null)]);
-  const publicAi = ai ? { baseUrl: ai.baseUrl, model: ai.model, temperature: ai.temperature, timeout: ai.timeout, hasKey: !!ai.apiKey, verified: !!ai.verified } : null;
-  return { product, ai: publicAi };
+  const ai = await read(KEYS.ai, null);
+  return { ai: ai ? { baseUrl: ai.baseUrl, model: ai.model, temperature: ai.temperature, timeout: ai.timeout, hasKey: !!ai.apiKey, verified: !!ai.verified } : null };
 }
-
-async function saveProduct(input) {
-  const product = {
-    enabled: input?.enabled === true,
-    name: clean(input?.name, 100), description: clean(input?.description), problem: clean(input?.problem),
-    targetUsers: clean(input?.targetUsers), capabilities: clean(input?.capabilities),
-    keywords: words(input?.keywords), excludeKeywords: words(input?.excludeKeywords), budget: clean(input?.budget, 200)
-  };
-  if (product.enabled && !opportunity.validProduct(product)) throw new Error('请填写产品名称、简介、解决的问题、目标客户和核心能力');
-  await write(KEYS.product, product);
-  return product;
-}
-
 async function saveAI(input) {
   const prior = await read(KEYS.ai, null);
   const baseUrl = clean(input?.baseUrl, 500);
   aiClient.endpointOf(baseUrl);
-  const model = clean(input?.model, 100);
-  const apiKey = clean(input?.apiKey, 500) || prior?.apiKey || '';
+  const model = clean(input?.model, 100), apiKey = clean(input?.apiKey, 500) || prior?.apiKey || '';
   if (!model || !apiKey) throw new Error('请填写 Model 和 API Key');
-  const temperature = Number(input?.temperature);
-  const timeout = Number(input?.timeout);
+  const temperature = Number(input?.temperature), timeout = Number(input?.timeout);
   if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error('Temperature 必须在 0 到 2 之间');
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 120000) throw new Error('Timeout 必须在 1000 到 120000 毫秒之间');
   const verified = !!(prior?.verified && prior.baseUrl === baseUrl && prior.model === model && prior.apiKey === apiKey && prior.temperature === temperature && prior.timeout === timeout);
   await write(KEYS.ai, { baseUrl, model, apiKey, temperature, timeout, verified });
   return { baseUrl, model, temperature, timeout, hasKey: true, verified };
 }
-
 async function markVerified() {
   const ai = await read(KEYS.ai, null);
   if (!ai) throw new Error('请先保存 AI 设置');
   await write(KEYS.ai, { ...ai, verified: true });
 }
-
 async function ready() {
-  const product = await read(KEYS.product, null);
   const ai = await read(KEYS.ai, null);
-  if (!opportunity.validProduct(product)) throw new Error('请先在插件中填写并启用「我的产品」');
   if (!ai?.verified || !ai.apiKey) throw new Error('请先在插件中配置 AI 并测试连接');
-  return { product, ai };
+  return { ai };
 }
 
-async function list(postId) {
-  const all = await read(KEYS.records, []);
-  return (Array.isArray(all) ? all : []).filter(x => !postId || x.postId === postId);
+async function list() { const all = await read(KEYS.clusters, []); return Array.isArray(all) ? all : []; }
+async function pool() { return (await list()).filter(x => x.inPool); }
+async function addToPool(id) {
+  const all = await list(), rec = all.find(x => x.id === id);
+  if (!rec) throw new Error('需求机会不存在');
+  rec.inPool = true; rec.updatedAt = Date.now();
+  await write(KEYS.clusters, all);
+  return rec;
 }
-
 async function update(id, patch) {
-  const all = await list();
-  const index = all.findIndex(x => x.id === id);
-  if (index < 0) throw new Error('商机不存在');
-  const next = { ...all[index] };
-  if (typeof patch.favorite === 'boolean') next.favorite = patch.favorite;
-  if (typeof patch.note === 'string') next.note = clean(patch.note, 2000);
-  if (patch.tags !== undefined) next.tags = words(patch.tags);
-  next.updatedAt = Date.now();
-  all[index] = next;
-  await write(KEYS.records, all);
-  return next;
+  const all = await list(), rec = all.find(x => x.id === id);
+  if (!rec?.inPool) throw new Error('请先将需求加入机会池');
+  if (typeof patch.favorite === 'boolean') rec.favorite = patch.favorite;
+  if (typeof patch.note === 'string') rec.note = clean(patch.note, 2000);
+  if (patch.tags !== undefined) rec.tags = words(patch.tags);
+  rec.updatedAt = Date.now();
+  await write(KEYS.clusters, all);
+  return rec;
 }
-
 async function remove(id) {
-  const all = await list();
-  const item = all.find(x => x.id === id);
-  if (!item) return false;
-  await write(KEYS.records, all.filter(x => x.id !== id));
-  const cache = await read(KEYS.cache, {});
-  if (item.cacheKey && cache[item.cacheKey]?.signature === item.signature) {
-    delete cache[item.cacheKey];
-    await write(KEYS.cache, cache);
-  }
+  const all = await list(), rec = all.find(x => x.id === id);
+  if (!rec?.inPool) return false;
+  rec.inPool = false; rec.updatedAt = Date.now();
+  await write(KEYS.clusters, all);
   return true;
 }
 
-async function analyzeBatch(input, fetchImpl = fetch) {
-  const { product, ai } = await ready();
-  if (!Array.isArray(input) || input.length < 1 || input.length > 10) throw new Error('每批只能分析 1 至 10 条评论');
-  const items = input.map(x => {
-    if (!/^\d{1,40}$/.test(String(x.comment_id)) || !/^\d{1,40}$/.test(String(x.post_id)) || typeof x.comment !== 'string' || !x.comment.trim() || x.comment.length > 4000) throw new Error('评论数据无效');
-    return {
-      comment_id: x.comment_id, post_id: x.post_id,
-      comment: clean(x.comment, 4000), parent_post: clean(x.parent_post, 4000), reply_parent: clean(x.reply_parent, 4000),
-      author: { id: clean(x.author?.id, 40), handle: core.normalizeHandle(x.author?.handle), name: clean(x.author?.name, 100), followers: Number.isSafeInteger(x.author?.followers) && x.author.followers >= 0 ? x.author.followers : null, following: Number.isSafeInteger(x.author?.following) && x.author.following >= 0 ? x.author.following : null }
-    };
+function normalizeInput(input) {
+  if (!Array.isArray(input) || input.length < 1 || input.length > 10) throw new Error('每批只能分析 1 至 10 条讨论');
+  const seen = new Set();
+  return input.map(x => {
+    const id = String(x?.post_id || '');
+    if (!/^\d{1,40}$/.test(id) || seen.has(id) || typeof x.text !== 'string' || !x.text.trim() || x.text.length > 4000) throw new Error('帖子数据无效或重复');
+    seen.add(id);
+    return { post_id: id, text: clean(x.text, 4000), parent_text: clean(x.parent_text, 4000),
+      created_at: clean(x.created_at, 100), author_handle: core.normalizeHandle(x.author_handle) };
   });
-  const cache = await read(KEYS.cache, {});
-  const pending = [], results = [];
-  for (const item of items) {
-    const sig = opportunity.signature({ id: item.comment_id, text: item.comment, parentPost: item.parent_post, replyParent: item.reply_parent }, product, ai.model, ai.baseUrl);
-    const key = hash(sig);
-    item.signature = sig; item.cacheKey = key;
-    if (cache[key]?.signature === sig) results.push({ item, result: cache[key].result, fromCache: true });
-    else pending.push(item);
-  }
-  if (pending.length) {
-    const analyzed = await aiClient.analyze(ai, product, pending, fetchImpl);
-    for (const result of analyzed) {
-      const item = pending.find(x => x.comment_id === result.comment_id);
-      cache[item.cacheKey] = { signature: item.signature, result };
-      results.push({ item, result, fromCache: false });
-    }
-    await write(KEYS.cache, cache);
-  }
-  const all = await list();
-  const output = [];
-  const profileKey = hash(JSON.stringify([product, ai.model, ai.baseUrl]));
-  let changedRecords = false;
-  for (const { item, result, fromCache } of results) {
-    if (!result.is_opportunity || result.opportunityScore < 40) {
-      const oldIndex = all.findIndex(x => x.commentId === item.comment_id && x.profileKey === profileKey);
-      if (oldIndex >= 0) { all.splice(oldIndex, 1); changedRecords = true; }
-      output.push({ commentId: item.comment_id, opportunity: null, fromCache }); continue;
-    }
-    const id = item.comment_id + ':' + item.cacheKey;
-    const index = all.findIndex(x => x.commentId === item.comment_id && x.profileKey === profileKey);
-    const prior = index >= 0 ? all[index] : null;
-    const now = Date.now();
-    const rec = {
-      id, cacheKey: item.cacheKey, signature: item.signature, commentId: item.comment_id, postId: item.post_id,
-      commentText: item.comment, parentPostText: item.parent_post, authorId: item.author.id,
-      authorHandle: item.author.handle, authorName: item.author.name, authorFollowers: item.author.followers, authorFollowing: item.author.following,
-      commentUrl: 'https://x.com/' + (item.author.handle || 'i') + '/status/' + item.comment_id,
-      productName: product.name, productSnapshot: JSON.stringify(product), profileKey, model: ai.model, aiEndpoint: ai.baseUrl,
-      opportunityType: result.opportunity_type, intentScore: result.intent_score, painScore: result.pain_score,
-      commercialScore: result.commercial_score, urgency: result.urgency, opportunityScore: result.opportunityScore,
-      productFitScore: result.product_fit_score, priorityScore: result.priorityScore,
-      need: result.need, painPoint: result.pain_point, budgetSignal: result.budget_signal,
-      fitReason: result.fit_reason, evidence: result.evidence, confidence: result.confidence,
-      favorite: prior?.favorite || false, note: prior?.note || '', tags: prior?.tags || [],
-      analyzedAt: now, createdAt: prior?.createdAt || now, updatedAt: now
-    };
-    if (index >= 0) all[index] = rec; else all.push(rec);
-    changedRecords = true;
-    output.push({ commentId: item.comment_id, opportunity: rec, fromCache });
-  }
-  if (changedRecords) await write(KEYS.records, all);
-  return { results: output, aiCount: pending.length };
 }
 
-module.exports = { KEYS, hash, getConfig, saveProduct, saveAI, markVerified, ready, list, update, remove, analyzeBatch };
+function rebuild(discoveries, previous) {
+  const byId = new Map(previous.map(x => [x.id, x]));
+  const groups = new Map();
+  for (const rec of discoveries) {
+    if (!groups.has(rec.clusterId)) groups.set(rec.clusterId, []);
+    groups.get(rec.clusterId).push(rec);
+  }
+  const result = [];
+  for (const [id, items] of groups) {
+    const prior = byId.get(id);
+    result.push(demand.summarizeCluster({ id, name: prior?.name || items[0].clusterName }, items, prior));
+  }
+  return result.sort((a, b) => b.opportunityScore - a.opportunityScore);
+}
+
+async function analyzeBatch(input, fetchImpl = fetch) {
+  const { ai } = await ready();
+  const items = normalizeInput(input);
+  const cache = await read(KEYS.cache, {});
+  const previous = await list();
+  const pending = [], analyzed = [];
+  for (const item of items) {
+    const signature = JSON.stringify(['demand-v1', item.post_id, item.text, item.parent_text, ai.model, ai.baseUrl]);
+    const key = hash(signature);
+    if (cache[key]?.signature === signature) analyzed.push({ item, result: cache[key].result, fromCache: true });
+    else pending.push({ ...item, key, signature });
+  }
+  if (pending.length) {
+    const response = await aiClient.analyze(ai, pending, previous, fetchImpl);
+    for (const result of response) {
+      const item = pending.find(x => x.post_id === result.post_id);
+      cache[item.key] = { signature: item.signature, result };
+      analyzed.push({ item, result, fromCache: false });
+    }
+    const keys = Object.keys(cache);
+    while (keys.length > 3000) delete cache[keys.shift()];
+    await write(KEYS.cache, cache);
+  }
+  const discoveries = await read(KEYS.discoveries, []);
+  const all = Array.isArray(discoveries) ? discoveries : [];
+  const byName = new Map(previous.map(x => [demand.normalizeName(x.name), x.id]));
+  const clusterIds = new Set(previous.map(x => x.id));
+  const output = [];
+  for (const { item, result, fromCache } of analyzed) {
+    const priorIndex = all.findIndex(x => x.postId === item.post_id);
+    if (priorIndex >= 0) all.splice(priorIndex, 1);
+    if (!result.is_demand) { output.push({ postId: item.post_id, clusterId: null, fromCache }); continue; }
+    const normalized = demand.normalizeName(result.cluster_name);
+    const clusterId = clusterIds.has(result.cluster_id) ? result.cluster_id : byName.get(normalized) || 'need:' + hash(normalized);
+    clusterIds.add(clusterId); byName.set(normalized, clusterId);
+    const rec = {
+      postId: item.post_id, clusterId, clusterName: result.cluster_name, demandType: result.demand_type,
+      need: result.need, painPoint: result.pain_point, targetUsers: result.target_users,
+      currentSolution: result.current_solution, needEvidence: result.need_evidence,
+      paymentEvidence: result.payment_evidence, competitionLevel: result.competition_level,
+      competitionEvidence: result.competition_evidence, directions: result.directions,
+      demandStrength: result.demand_strength, painScore: result.pain_score, paymentScore: result.payment_score,
+      createdAt: item.created_at, url: 'https://x.com/' + (item.author_handle || 'i') + '/status/' + item.post_id,
+      analyzedAt: Date.now()
+    };
+    all.push(rec);
+    output.push({ postId: item.post_id, clusterId, fromCache });
+  }
+  // Cap local history; never persist non-demand text or a full X response.
+  while (all.length > 2000) all.shift();
+  await write(KEYS.discoveries, all);
+  const clusters = rebuild(all, previous);
+  await write(KEYS.clusters, clusters);
+  return { results: output, aiCount: pending.length, clusters: clusters.filter(x => output.some(y => y.clusterId === x.id)) };
+}
+
+module.exports = { KEYS, hash, getConfig, saveAI, markVerified, ready, list, pool, addToPool, update, remove, normalizeInput, rebuild, analyzeBatch };

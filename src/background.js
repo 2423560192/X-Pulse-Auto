@@ -44,7 +44,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function dispatchOpportunity(action, payload) {
   switch (action) {
     case 'config': return opportunities.getConfig();
-    case 'saveProduct': return opportunities.saveProduct(payload.product);
     case 'saveAI': return opportunities.saveAI(payload.ai);
     case 'ready': { await opportunities.ready(); return true; }
     case 'testAI': {
@@ -56,7 +55,9 @@ async function dispatchOpportunity(action, payload) {
       await opportunities.markVerified();
       return true;
     }
-    case 'list': return opportunities.list(payload.postId);
+    case 'list': return opportunities.list();
+    case 'pool': return opportunities.pool();
+    case 'addToPool': return opportunities.addToPool(payload.id);
     case 'update': return opportunities.update(payload.id, payload.patch || {});
     case 'remove': return opportunities.remove(payload.id);
     case 'analyze': {
@@ -65,14 +66,14 @@ async function dispatchOpportunity(action, payload) {
       if (!granted) throw new Error('AI 服务域名权限已失效，请重新测试连接');
       return opportunities.analyzeBatch(payload.items);
     }
-    default: throw new Error('未知商机操作');
+    default: throw new Error('未知需求机会操作');
   }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== 'xp-opportunity') return undefined;
   const task = () => dispatchOpportunity(message.action, message.payload || {});
-  const p = ['saveProduct', 'saveAI', 'testAI', 'update', 'remove', 'analyze'].includes(message.action) ? enqueue(task) : task();
+  const p = ['saveAI', 'testAI', 'addToPool', 'update', 'remove', 'analyze'].includes(message.action) ? enqueue(task) : task();
   p.then(result => sendResponse({ ok: true, result }))
     .catch(err => sendResponse({ ok: false, error: String((err && err.message) || err) }));
   return true;

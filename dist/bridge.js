@@ -3,7 +3,7 @@
   // Page-world observer: never reads cookies, request headers, bodies or credentials.
   // Only whitelisted field names are forwarded; everything else (cookies, tokens,
   // emails, DMs) is stripped before crossing into the isolated world.
-  const VERSION = '3.0.0';
+  const VERSION = '4.0.0';
   const channel = 'x-pulse:response:v2';
 
   const ALLOWED_FIELDS = new Set([

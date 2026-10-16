@@ -30,7 +30,8 @@ function normalizePost(raw) {
     conversationId,
     isReply: !!inReplyToId,
     isQuote: !!(legacy.is_quote_status || raw.quoted_status_result || legacy.quoted_status),
-    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000)
+    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000),
+    createdAt: String(legacy.created_at || raw.created_at || '').slice(0, 100)
   };
 }
 

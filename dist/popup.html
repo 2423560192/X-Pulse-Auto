@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>X Pulse</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>粉丝徽标 · 商机雷达</p></div><span class="version">3.0.0</span></header>
-<div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>在帖子详情页手动扫描已加载评论</p></div>
+<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>粉丝徽标 · 需求机会雷达</p></div><span class="version">4.0.0</span></header>
+<div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>在 X 页面手动扫描已加载的帖子和评论</p></div>
 <main>
 <details><summary>粉丝徽标与账号收藏</summary>
   <label class="row"><span>自动显示粉丝数</span><input id="enabled" data-key="enabled" type="checkbox" role="switch"></label>
@@ -18,18 +18,6 @@
   <div class="section-head"><strong>账号收藏</strong><span><button id="export-csv" type="button">CSV</button> <button id="export-json" type="button">JSON</button></span></div>
   <input id="fav-search" type="search" placeholder="搜索账号／备注"><ul id="fav-list"></ul>
 </details>
-<details><summary>我的产品</summary>
-  <label class="row"><span>启用当前产品</span><input id="product-enabled" type="checkbox" role="switch"></label>
-  <label class="stack">产品名称<input id="product-name" maxlength="100"></label>
-  <label class="stack">产品简介<textarea id="product-description" maxlength="1000"></textarea></label>
-  <label class="stack">解决的问题<textarea id="product-problem" maxlength="1000"></textarea></label>
-  <label class="stack">目标客户<textarea id="product-target" maxlength="1000"></textarea></label>
-  <label class="stack">核心能力<textarea id="product-capabilities" maxlength="1000"></textarea></label>
-  <label class="stack">关键词（逗号分隔）<input id="product-keywords"></label>
-  <label class="stack">排除关键词（逗号分隔）<input id="product-exclusions"></label>
-  <label class="stack">价格／预算范围（可选）<input id="product-budget"></label>
-  <button type="button" id="save-product">保存产品</button>
-</details>
 <details><summary>AI 设置</summary>
   <label class="stack">API Base URL<input id="ai-base" type="url" value="https://api.openai.com/v1"></label>
   <label class="stack">API Key<input id="ai-key" type="password" autocomplete="off" placeholder="留空则保留已保存的 Key"></label>
@@ -39,12 +27,13 @@
   <div class="button-row"><button type="button" id="save-ai">保存 AI 设置</button><button type="button" id="test-ai">测试连接并授权域名</button></div>
   <p id="ai-status" class="hint" role="status" aria-live="polite">尚未测试连接</p>
 </details>
-<details open><summary>我的商机</summary>
-  <label class="field">评论标记<select data-path="opportunity.badgeLevel"><option value="high">仅高意向</option><option value="medium">中高意向</option><option value="all">全部</option></select></label>
-  <input id="opp-search" type="search" placeholder="搜索用户／关键词／需求／产品">
-  <div class="button-row"><select id="opp-filter"><option value="all">全部商机</option><option value="high">高意向</option><option value="medium">中意向</option><option value="low">低意向</option><option value="tool_request">工具需求</option><option value="api_request">API 需求</option><option value="purchase_intent">购买需求</option><option value="service_request">服务需求</option></select><select id="opp-sort"><option value="priority">优先级</option><option value="recent">最新发现</option><option value="followers">粉丝数</option><option value="strength">商机强度</option><option value="fit">产品匹配度</option></select></div>
+<details open><summary>发现的需求</summary>
+  <p class="hint">AI 将相似讨论归成需求机会。只有你确认后，才进入机会池。</p>
+  <div class="button-row"><button type="button" id="scan-page">扫描当前 X 页面</button><span id="scan-page-status" class="hint" role="status"></span></div>
+  <input id="opp-search" type="search" placeholder="搜索需求／痛点／可能方向">
+  <div class="button-row"><select id="opp-view"><option value="discovered">发现的需求</option><option value="pool">机会池</option></select><select id="opp-sort"><option value="score">机会评分</option><option value="count">出现次数</option><option value="recent">最近更新</option></select><button type="button" id="opp-refresh">刷新</button></div>
   <ul id="opp-list"></ul><div id="opp-detail"></div>
 </details>
 <p id="diagnostic" role="status">正在检查当前标签页…</p><p id="error" role="alert"></p>
-</main><footer>只观察 X 页面已加载的数据。AI 分析仅在你点击扫描后开始；评论和产品资料会发往你配置的 AI 服务。</footer>
+</main><footer>只观察 X 页面已加载的数据。扫描由你手动触发；讨论文本会发往你配置的 AI 服务。趋势与竞争判断仅基于已扫描样本。</footer>
 <script src="popup.bundle.js"></script></body></html>

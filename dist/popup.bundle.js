@@ -12,6 +12,7 @@ const config = require('../shared/config.js');
 const favorites = require('../shared/favorites.js');
 const exporter = require('../shared/exporter.js');
 const attachAIConnection = require('./ai-connection.js');
+const mountDemandUI = require('./demand-ui.js');
 
 const KEY = 'xp_inline_settings';
 let cfg = config.config();
@@ -163,35 +164,16 @@ setInterval(diagnostics, 1500);
 function opportunityRpc(action, payload = {}) {
   return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
     if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-    if (!response?.ok) return reject(new Error(response?.error || '商机操作失败'));
+    if (!response?.ok) return reject(new Error(response?.error || '需求机会操作失败'));
     resolve(response.result);
   }));
 }
 const field = id => document.getElementById(id);
-function productInput() {
-  return {
-    enabled: field('product-enabled').checked, name: field('product-name').value,
-    description: field('product-description').value, problem: field('product-problem').value,
-    targetUsers: field('product-target').value, capabilities: field('product-capabilities').value,
-    keywords: field('product-keywords').value, excludeKeywords: field('product-exclusions').value,
-    budget: field('product-budget').value
-  };
-}
 function aiInput() {
   return {
     baseUrl: field('ai-base').value, apiKey: field('ai-key').value, model: field('ai-model').value,
     temperature: Number(field('ai-temperature').value), timeout: Number(field('ai-timeout').value)
   };
-}
-function paintProduct(product) {
-  if (!product) return;
-  field('product-enabled').checked = !!product.enabled;
-  for (const [id, value] of [
-    ['product-name', product.name], ['product-description', product.description], ['product-problem', product.problem],
-    ['product-target', product.targetUsers], ['product-capabilities', product.capabilities],
-    ['product-keywords', (product.keywords || []).join(', ')], ['product-exclusions', (product.excludeKeywords || []).join(', ')],
-    ['product-budget', product.budget]
-  ]) field(id).value = value || '';
 }
 function paintAI(ai) {
   if (!ai) return;
@@ -203,11 +185,7 @@ function paintAI(ai) {
   field('ai-status').textContent = ai.verified ? '连接已测试，可以开始扫描' : ai.hasKey ? '已保存 Key，需测试连接' : '尚未设置 API Key';
 }
 
-opportunityRpc('config').then(({ product, ai }) => { paintProduct(product); paintAI(ai); }).catch(e => { error.textContent = e.message; });
-field('save-product').addEventListener('click', async () => {
-  try { paintProduct(await opportunityRpc('saveProduct', { product: productInput() })); error.textContent = ''; }
-  catch (e) { error.textContent = e.message; }
-});
+opportunityRpc('config').then(({ ai }) => paintAI(ai)).catch(e => { error.textContent = e.message; });
 field('save-ai').addEventListener('click', async () => {
   try { paintAI(await opportunityRpc('saveAI', { ai: aiInput() })); error.textContent = ''; }
   catch (e) { error.textContent = e.message; }
@@ -217,88 +195,26 @@ attachAIConnection({
   requestPermission: details => chrome.permissions.request(details),
   rpc: opportunityRpc, paintAI, clearError: () => { error.textContent = ''; }
 });
-
-let opportunityList = [], selectedOpportunity = '';
-function filteredOpportunities() {
-  const q = field('opp-search').value.trim().toLowerCase();
-  const filter = field('opp-filter').value;
-  const order = field('opp-sort').value;
-  const items = opportunityList.filter(x => {
-    if (q && ![x.authorHandle, x.authorName, x.need, x.commentText, x.productName].join(' ').toLowerCase().includes(q)) return false;
-    if (filter === 'high' && x.opportunityScore < 80) return false;
-    if (filter === 'medium' && (x.opportunityScore < 60 || x.opportunityScore >= 80)) return false;
-    if (filter === 'low' && x.opportunityScore >= 60) return false;
-    if (!['all', 'high', 'medium', 'low'].includes(filter) && x.opportunityType !== filter) return false;
-    return true;
-  });
-  const get = {
-    priority: x => x.priorityScore, recent: x => x.createdAt, followers: x => x.authorFollowers || 0,
-    strength: x => x.opportunityScore, fit: x => x.productFitScore
-  }[order];
-  return items.sort((a, b) => get(b) - get(a));
-}
-function oppButton(label, fn) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); return b; }
-function renderOpportunityDetail() {
-  const box = field('opp-detail'); box.replaceChildren();
-  const rec = opportunityList.find(x => x.id === selectedOpportunity);
-  if (!rec) return;
-  const heading = document.createElement('strong'); heading.textContent = (rec.authorName || rec.authorHandle) + ' @' + rec.authorHandle; box.append(heading);
-  for (const [label, value] of [
-    ['粉丝', rec.authorFollowers ?? '未知'], ['关注', rec.authorFollowing ?? '未知'], ['原帖', rec.parentPostText],
-    ['评论', rec.commentText], ['类型', rec.opportunityType], ['需求', rec.need], ['痛点', rec.painPoint],
-    ['商机强度', rec.opportunityScore], ['产品匹配', rec.productFitScore], ['优先级', rec.priorityScore],
-    ['依据', rec.evidence], ['匹配理由', rec.fitReason], ['预算', rec.budgetSignal],
-    ['备注', rec.note || '无'], ['标签', (rec.tags || []).join('、') || '无'],
-    ['发现时间', new Date(rec.createdAt).toLocaleString('zh-CN')]
-  ]) {
-    const p = document.createElement('p');
-    const strong = document.createElement('strong'); strong.textContent = label + '：';
-    p.append(strong, document.createTextNode(String(value ?? ''))); box.append(p);
-  }
-  const actions = document.createElement('div'); actions.className = 'button-row';
-  actions.append(
-    oppButton(rec.favorite ? '取消收藏' : '收藏', () => editOpportunity(rec, { favorite: !rec.favorite })),
-    oppButton('备注', () => { const note = prompt('商机备注', rec.note || ''); if (note !== null) editOpportunity(rec, { note }); }),
-    oppButton('标签', () => { const tags = prompt('标签，逗号分隔', (rec.tags || []).join(', ')); if (tags !== null) editOpportunity(rec, { tags }); }),
-    oppButton('打开评论', () => chrome.tabs.create({ url: rec.commentUrl })),
-    oppButton('打开用户', () => rec.authorHandle && chrome.tabs.create({ url: 'https://x.com/' + rec.authorHandle })),
-    oppButton('删除', () => deleteOpportunity(rec))
-  ); box.append(actions);
-}
-function renderOpportunities() {
-  const list = field('opp-list'); list.replaceChildren();
-  const items = filteredOpportunities();
-  if (!items.length) { const empty = document.createElement('li'); empty.className = 'opp-empty'; empty.textContent = '暂无匹配商机'; list.append(empty); }
-  for (const rec of items) {
-    const li = document.createElement('li'); li.className = 'opp-item';
-    const b = oppButton('@' + (rec.authorHandle || 'unknown') + ' · 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => { selectedOpportunity = rec.id; renderOpportunityDetail(); });
-    const snippet = document.createElement('div'); snippet.className = 'opp-snippet'; snippet.textContent = rec.need || rec.commentText;
-    li.append(b, snippet); list.append(li);
-  }
-  renderOpportunityDetail();
-}
-async function refreshOpportunities() {
-  try { opportunityList = await opportunityRpc('list'); renderOpportunities(); }
-  catch (e) { error.textContent = e.message; }
-}
-async function editOpportunity(rec, patch) {
-  try { await opportunityRpc('update', { id: rec.id, patch }); await refreshOpportunities(); error.textContent = ''; }
-  catch (e) { error.textContent = e.message; }
-}
-async function deleteOpportunity(rec) {
-  if (!confirm('删除这条商机？再次手动扫描时可能重新发现。')) return;
-  try { await opportunityRpc('remove', { id: rec.id }); selectedOpportunity = ''; await refreshOpportunities(); error.textContent = ''; }
-  catch (e) { error.textContent = e.message; }
-}
-for (const id of ['opp-search', 'opp-filter', 'opp-sort']) field(id).addEventListener(id === 'opp-search' ? 'input' : 'change', renderOpportunities);
-refreshOpportunities();
+mountDemandUI({ field, rpc: opportunityRpc, error });
+field('scan-page').addEventListener('click', async () => {
+  const status = field('scan-page-status');
+  status.textContent = '正在启动…';
+  try {
+    await opportunityRpc('ready');
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('没有可扫描的当前标签页');
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'xp-scan-page' });
+    if (!response?.started) throw new Error('请在 X 页面打开帖子后重试');
+    status.textContent = '已启动，请在 X 页面查看进度';
+  } catch (e) { status.textContent = e.message; }
+});
 
 },
 "version": function(require, module, exports) {
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '3.0.0';
+module.exports = '4.0.0';
 
 },
 "shared/config": function(require, module, exports) {
@@ -308,10 +224,9 @@ module.exports = '3.0.0';
 const legacy = require('./settings.js');
 
 const DEFAULTS = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   account: { showRatio: true, showAge: true, showTier: true },
-  favorites: { enabled: true },
-  opportunity: { badgeLevel: 'high' }
+  favorites: { enabled: true }
 };
 
 function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
@@ -322,7 +237,6 @@ function config(input = {}) {
 
   const account = { ...DEFAULTS.account };
   const favorites = { ...DEFAULTS.favorites };
-  const opportunity = { ...DEFAULTS.opportunity };
 
   if (input && typeof input === 'object') {
     if (input.account && typeof input.account === 'object') {
@@ -333,12 +247,9 @@ function config(input = {}) {
     if (input.favorites && typeof input.favorites === 'object') {
       favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
     }
-    if (input.opportunity && typeof input.opportunity === 'object') {
-      opportunity.badgeLevel = oneOf(input.opportunity.badgeLevel, ['all', 'medium', 'high'], opportunity.badgeLevel);
-    }
   }
 
-  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites, opportunity };
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites };
 }
 
 module.exports = { defaults: DEFAULTS, config, bool, oneOf };
@@ -615,13 +526,37 @@ async function requestChat(settings, messages, maxTokens, fetchImpl = fetch) {
       body: JSON.stringify({ model: settings.model, temperature: settings.temperature, max_tokens: maxTokens, messages }),
       signal: controller.signal
     });
-    if (!response.ok) throw new Error('AI 接口返回 HTTP ' + response.status);
     const body = await response.text();
     if (body.length > 250000) throw new Error('AI 响应过大');
     let parsed;
-    try { parsed = JSON.parse(body); } catch { throw new Error('AI 接口响应格式无效'); }
-    const content = parsed?.choices?.[0]?.message?.content;
-    if (typeof content !== 'string') throw new Error('AI 接口未返回文本');
+    try { parsed = JSON.parse(body); } catch {
+      if (!response.ok) throw new Error('AI 接口返回 HTTP ' + response.status + '，响应不是 JSON');
+      throw new Error('AI 接口响应格式无效（不是 JSON）');
+    }
+    const detail = value => String(value || '').replaceAll(settings.apiKey || '\0', '[已隐藏]').replace(/\s+/g, ' ').slice(0, 180);
+    const serviceError = parsed?.error;
+    if (!response.ok || serviceError) {
+      const message = detail(typeof serviceError === 'string' ? serviceError : serviceError?.message);
+      const code = detail(serviceError?.code || serviceError?.type);
+      throw new Error('AI 接口返回 HTTP ' + response.status + (code ? '（' + code + '）' : '') + (message ? '：' + message : ''));
+    }
+    const choice = parsed?.choices?.[0];
+    const rawContent = choice?.message?.content;
+    const content = typeof rawContent === 'string' ? rawContent
+      : Array.isArray(rawContent) ? rawContent.map(x => typeof x === 'string' ? x : typeof x?.text === 'string' ? x.text : '').join('')
+      : typeof choice?.text === 'string' ? choice.text : parsed?.output_text;
+    if (typeof content !== 'string' || !content.trim()) {
+      const reason = detail(choice?.finish_reason);
+      const used = parsed?.usage?.completion_tokens;
+      const reasoning = parsed?.usage?.completion_tokens_details?.reasoning_tokens;
+      const refusal = detail(choice?.message?.refusal);
+      const facts = [reason && '结束原因 ' + reason, Number.isFinite(used) && '输出 token ' + used,
+        Number.isFinite(reasoning) && '其中推理 token ' + reasoning].filter(Boolean);
+      const hint = reason === 'length' ? '输出额度已耗尽，可换用非推理模型或提高模型输出上限'
+        : refusal ? '模型拒绝：' + refusal : !choice ? '响应缺少 choices[0]，请检查接口是否兼容 Chat Completions'
+          : '请检查模型是否支持 Chat Completions 文本输出';
+      throw new Error('AI 接口返回空内容' + (facts.length ? '（' + facts.join('，') + '）' : '') + '；' + hint);
+    }
     return content;
   } catch (error) {
     if (controller.signal.aborted) throw new Error('AI 请求超时');
@@ -630,24 +565,26 @@ async function requestChat(settings, messages, maxTokens, fetchImpl = fetch) {
 }
 
 const SYSTEM = [
-  '你是 X 评论商机分析器。只输出 JSON 对象 {"results":[...]}，逐条对应输入 comment_id，不得遗漏或重复。',
-  '只根据原帖、回复上下文、评论和产品资料判断，不得编造预算、购买意愿或未出现的事实。粉丝数不能单独决定商机分数。',
-  '每项包含 comment_id,is_opportunity,opportunity_type,intent_score,pain_score,commercial_score,urgency,product_fit_score,need,pain_point,budget_signal,fit_reason,evidence,confidence。',
-  '分数为 0-100 数字；urgency 为 high/medium/low/unknown；confidence 为 0-1。budget_signal 未明确提到时写 unknown。',
-  'evidence 必须逐字摘录自该评论或提供的原帖/回复上下文；没有商机时 is_opportunity=false、opportunity_type=not_opportunity、evidence 可为空。',
-  'opportunity_type 只用 tool_request,solution_request,api_request,purchase_intent,service_request,pain_point,outsourcing,collaboration,recommendation,other,not_opportunity。'
+  '你是 X 讨论需求雷达。目标是从真实原话判断人们需要解决什么问题，以及可能做什么产品或服务；不寻找某个已有产品的客户。只输出 JSON 对象 {"results":[...]}，每个 post_id 恰好一项。',
+  '逐条判断原帖和评论本身的真实需求，并结合可用的父帖上下文。原帖也可能直接表达需求。普通闲聊、广告、转述别人的需求、纯新闻和没有具体问题的泛泛感慨应标记 is_demand=false。不能仅凭关键词判断。',
+  '有需求时，输出 post_id,is_demand,cluster_id,cluster_name,demand_type,need,pain_point,target_users,current_solution,solution_evidence,need_evidence,payment_evidence,demand_strength,pain_score,payment_score,competition_level,competition_evidence,directions。',
+  'cluster_id 只可用 existing_clusters 中确实语义相同的 ID；新主题用空字符串，同一批相同新主题使用完全相同的 cluster_name。cluster_name 是简短、中性的需求名称，不是产品名。',
+  'demand_type 只用 tool_request,service_request,solution_search,pain_point,repetitive_work,payment_intent,other。三个分数为 0-100 数字。',
+  'need_evidence 必须逐字摘录自该帖子本身。仅明确提到付款、预算、价格、采购等时填写 payment_evidence（逐字摘录帖子），否则置空且 payment_score=0。',
+  '当前方案只有在帖子或父帖明确提到时才填写，并提供逐字 solution_evidence；否则两字段置空。competition_level 只能依据讨论中明确提到的替代方案/竞争工具判断并提供逐字 competition_evidence，否则为 unknown 且证据为空。不得声称完成市场调查。',
+  'directions 给出 1-3 个可卖的产品或服务方向，避免虚构已存在的能力；其他不确定字段用空字符串。不是需求时只输出 post_id 和 is_demand=false。'
 ].join('\n');
 
-async function analyze(settings, product, items, fetchImpl = fetch) {
-  const payload = items.map(x => ({ comment_id: x.comment_id, parent_post: x.parent_post, reply_parent: x.reply_parent || '', comment: x.comment, author: x.author }));
-  const prompt = JSON.stringify({ product, comments: payload });
-  const response = await requestChat(settings, [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }], Math.min(8000, 800 + items.length * 550), fetchImpl);
-  return opportunity.validateBatch(opportunity.parseAI(response), payload);
+async function analyze(settings, items, clusters = [], fetchImpl = fetch) {
+  const payload = items.map(x => ({ post_id: x.post_id, text: x.text, parent_text: x.parent_text || '', created_at: x.created_at || '' }));
+  const existing = clusters.map(x => ({ id: x.id, name: x.name, pain_points: x.painPoints?.slice(0, 2) || [] })).slice(0, 200);
+  const prompt = JSON.stringify({ discussions: payload, existing_clusters: existing });
+  const response = await requestChat(settings, [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }], Math.min(10000, 900 + items.length * 850), fetchImpl);
+  return opportunity.validateBatch(opportunity.parseAI(response), payload, existing);
 }
 
 async function testConnection(settings, fetchImpl = fetch) {
-  const content = await requestChat(settings, [{ role: 'user', content: 'Reply with OK.' }], 8, fetchImpl);
-  if (!content.trim()) throw new Error('AI 连接测试未返回内容');
+  await requestChat(settings, [{ role: 'user', content: '请只回复 OK。' }], 512, fetchImpl);
   return true;
 }
 
@@ -656,49 +593,17 @@ module.exports = { endpointOf, originPattern, requestChat, analyze, testConnecti
 },
 "shared/opportunity": function(require, module, exports) {
 'use strict';
-// Pure rules, reply selection, AI result validation, and deterministic scoring.
+// AI judges meaning; local code validates claims and aggregates observed evidence.
 
-const TYPES = new Set(['tool_request', 'solution_request', 'api_request', 'purchase_intent', 'service_request', 'pain_point', 'outsourcing', 'collaboration', 'recommendation', 'other', 'not_opportunity']);
-const NEED = /有没有|求推荐|推荐一下|什么工具|有什么工具|找一个|寻找|求一个|哪里有|谁能|有没有人做|需要|求助|怎么解决|looking for|recommend|need a|any tool|how can i/i;
-const TOOL = /工具|软件|平台|saas|api|插件|系统|自动化|ai|app|service|integration/i;
-const PAIN = /太麻烦|效率低|人工|耗时|不会|做不出来|成本高|太贵|一直失败|很难|痛点|费时|slow|expensive|struggling|difficult/i;
-const COMMERCIAL = /多少钱|价格|购买|付费|收费|报价|预算|采购|合作|外包|付钱|pay|buy|price|budget|hire/i;
-const TRIVIAL = /^(?:哈+|确实|赞|支持|第一|6+|牛|牛逼|👍+|😂+|🤣+|🔥+)$/i;
+const TYPES = new Set(['tool_request', 'service_request', 'solution_search', 'pain_point', 'repetitive_work', 'payment_intent', 'other']);
+const COMPETITION = new Set(['high', 'medium', 'low', 'unknown']);
+const TRIVIAL = /^(?:哈+|哈哈+|确实|赞|支持|第一|6+|牛|👍+|😂+|🤣+|🔥+|yes|ok|thanks)$/i;
+const SPAM = /加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i;
+const MONEY = /预算|价格|多少钱|付费|给钱|花钱|购买|买|采购|报价|收费|订阅|pay|paid|buy|purchase|budget|price|cost|hire|spend|bucks|dollars|\$|¥|￥/i;
 
-function ruleMatch(text, product = {}) {
+function scanCandidate(text) {
   const value = String(text || '').trim();
-  if (!value || value.length < 2 || TRIVIAL.test(value) || !/[\p{L}\p{N}]/u.test(value)) return false;
-  if (/加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i.test(value)) return false;
-  const excluded = Array.isArray(product.excludeKeywords) ? product.excludeKeywords : [];
-  if (excluded.some(k => k && value.toLowerCase().includes(String(k).toLowerCase()))) return false;
-  return NEED.test(value) || PAIN.test(value) || COMMERCIAL.test(value) || (TOOL.test(value) && /求|找|需要|推荐|有没有|can|need|looking/i.test(value));
-}
-
-function belongsToThread(post, rootId, byId) {
-  if (!post?.isReply || post.isQuote || post.id === rootId) return false;
-  if (post.conversationId === rootId) return true;
-  const visited = new Set([post.id]);
-  let parentId = post.inReplyToId;
-  for (let depth = 0; parentId && depth < 30; depth++) {
-    if (parentId === rootId) return true;
-    if (visited.has(parentId)) return false;
-    visited.add(parentId);
-    parentId = byId.get(parentId)?.inReplyToId;
-  }
-  return false;
-}
-
-function commentsForThread(posts, rootId) {
-  const byId = new Map(posts.map(p => [p.id, p]));
-  return posts.filter(p => belongsToThread(p, rootId, byId)).sort((a, b) => (a.observedAt || 0) - (b.observedAt || 0));
-}
-
-function validProduct(p) {
-  return !!(p && p.enabled && ['name', 'description', 'problem', 'targetUsers', 'capabilities'].every(k => typeof p[k] === 'string' && p[k].trim()));
-}
-
-function signature(comment, product, model, endpoint) {
-  return JSON.stringify([comment.id, comment.text, comment.parentPost || '', comment.replyParent || '', product, model, endpoint]);
+  return value.length >= 4 && !TRIVIAL.test(value) && !SPAM.test(value) && /[\p{L}\p{N}]/u.test(value);
 }
 
 function parseAI(text) {
@@ -706,47 +611,161 @@ function parseAI(text) {
   try { return JSON.parse(cleaned); } catch { throw new Error('AI 返回的不是有效 JSON'); }
 }
 
-function score(result) {
-  const urgency = { high: 100, medium: 50, low: 0, unknown: 0 }[result.urgency];
-  const opportunityScore = Math.round(result.intent_score * .4 + result.pain_score * .25 + result.commercial_score * .2 + urgency * .15);
-  const priorityScore = Math.round((opportunityScore * .6 + result.product_fit_score * .4) * 10) / 10;
-  return { opportunityScore, priorityScore };
-}
-
-function validateResult(raw, requested) {
-  if (!raw || typeof raw !== 'object' || typeof raw.comment_id !== 'string' || !requested.has(raw.comment_id)) throw new Error('AI 结果缺少对应评论 ID');
-  if (typeof raw.is_opportunity !== 'boolean' || !TYPES.has(raw.opportunity_type)) throw new Error('AI 商机类型无效');
-  for (const field of ['intent_score', 'pain_score', 'commercial_score', 'product_fit_score']) {
-    if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
-  }
-  if (!['high', 'medium', 'low', 'unknown'].includes(raw.urgency)) throw new Error('AI 紧迫度无效');
-  if (!Number.isFinite(raw.confidence) || raw.confidence < 0 || raw.confidence > 1) throw new Error('AI 置信度无效');
-  for (const field of ['need', 'pain_point', 'budget_signal', 'fit_reason', 'evidence']) {
-    if (typeof raw[field] !== 'string' || raw[field].length > 1000) throw new Error('AI 字段无效：' + field);
-  }
-  const source = requested.get(raw.comment_id);
-  if (!raw.is_opportunity && raw.opportunity_type !== 'not_opportunity') throw new Error('AI 非商机类型矛盾');
-  if (raw.is_opportunity && (!raw.need.trim() || !raw.fit_reason.trim())) throw new Error('AI 商机缺少需求或匹配理由');
-  if (raw.is_opportunity && (!raw.evidence.trim() || ![source.comment, source.parent_post, source.reply_parent || ''].some(t => t.includes(raw.evidence)))) throw new Error('AI 判断依据不在原文中');
-  if (raw.is_opportunity && raw.opportunity_type === 'not_opportunity') throw new Error('AI 商机类型矛盾');
-  if (raw.budget_signal.toLowerCase() !== 'unknown' && !/预算|价格|多少钱|付费|购买|买|采购|报价|收费|pay|buy|budget|price|cost/i.test(source.comment)) throw new Error('评论没有明确预算或付费信号');
-  return { ...raw, ...score(raw) };
-}
-
-function validateBatch(parsed, items) {
-  if (!parsed || !Array.isArray(parsed.results)) throw new Error('AI 缺少 results 数组');
-  const requested = new Map(items.map(x => [x.comment_id, x]));
-  if (parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+function validateBatch(parsed, items, clusters = []) {
+  if (!parsed || !Array.isArray(parsed.results) || parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+  const requested = new Map(items.map(x => [String(x.post_id), x]));
+  const existing = new Set(clusters.map(x => x.id));
   const seen = new Set();
   return parsed.results.map(raw => {
-    const result = validateResult(raw, requested);
-    if (seen.has(result.comment_id)) throw new Error('AI 返回重复评论');
-    seen.add(result.comment_id);
-    return result;
+    const id = raw?.post_id;
+    if (typeof id !== 'string' || !requested.has(id) || seen.has(id)) throw new Error('AI 返回缺失或重复的帖子 ID');
+    seen.add(id);
+    if (typeof raw.is_demand !== 'boolean') throw new Error('AI 缺少需求判断');
+    if (!raw.is_demand) return { post_id: id, is_demand: false };
+    if (!TYPES.has(raw.demand_type)) throw new Error('AI 需求类型无效');
+    if (typeof raw.cluster_id !== 'string' || (raw.cluster_id && !existing.has(raw.cluster_id))) throw new Error('AI 聚类 ID 无效');
+    for (const field of ['cluster_name', 'need', 'pain_point', 'target_users', 'current_solution', 'solution_evidence', 'need_evidence', 'payment_evidence', 'competition_evidence']) {
+      if (typeof raw[field] !== 'string' || raw[field].length > 500) throw new Error('AI 字段无效：' + field);
+    }
+    if (raw.cluster_name.length > 100) throw new Error('需求名称过长');
+    if (!raw.cluster_name.trim() || !raw.need.trim() || !raw.need_evidence.trim()) throw new Error('AI 需求缺少名称或原话证据');
+    const source = requested.get(id);
+    if (!source.text.includes(raw.need_evidence)) throw new Error('需求证据不在帖子原文中');
+    if (raw.payment_evidence && (!source.text.includes(raw.payment_evidence) || !MONEY.test(raw.payment_evidence))) throw new Error('付费信号缺少原文依据');
+    if (raw.solution_evidence && ![source.text, source.parent_text || ''].some(x => x.includes(raw.solution_evidence))) throw new Error('现有方案证据不在讨论中');
+    if (raw.current_solution && !raw.solution_evidence) throw new Error('现有方案缺少证据');
+    if (!COMPETITION.has(raw.competition_level)) throw new Error('竞争程度无效');
+    if (raw.competition_level !== 'unknown' && (!raw.competition_evidence || ![source.text, source.parent_text || ''].some(x => x.includes(raw.competition_evidence)))) throw new Error('竞争判断缺少讨论证据');
+    if (!Array.isArray(raw.directions) || raw.directions.length < 1 || raw.directions.length > 3 || raw.directions.some(x => typeof x !== 'string' || !x.trim() || x.length > 100)) throw new Error('可能方向无效');
+    for (const field of ['demand_strength', 'pain_score', 'payment_score']) {
+      if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
+    }
+    if (!raw.payment_evidence && raw.payment_score !== 0) throw new Error('无付费证据时付费分数必须为 0');
+    return { ...raw, cluster_name: raw.cluster_name.trim(), directions: raw.directions.map(x => x.trim()) };
   });
 }
 
-module.exports = { ruleMatch, belongsToThread, commentsForThread, validProduct, signature, parseAI, score, validateResult, validateBatch, TYPES };
+function normalizeName(value) { return String(value || '').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ''); }
+const average = (items, key) => items.length ? Math.round(items.reduce((sum, x) => sum + x[key], 0) / items.length) : 0;
+function unique(values, limit) { return [...new Set(values.map(x => String(x || '').trim()).filter(Boolean))].slice(0, limit); }
+
+function trendOf(items) {
+  const dates = items.map(x => Date.parse(x.createdAt || '')).filter(Number.isFinite);
+  if (dates.length < 5 || Math.max(...dates) - Math.min(...dates) < 14 * 86400000) return '样本不足';
+  const end = Math.max(...dates);
+  const recent = dates.filter(x => x > end - 7 * 86400000).length;
+  const prior = dates.filter(x => x <= end - 7 * 86400000 && x > end - 14 * 86400000).length;
+  if (!prior) return '样本不足';
+  return '已扫描样本：' + (recent > prior * 1.2 ? '上升' : recent < prior * .8 ? '下降' : '持平') + '（近 7 天 ' + recent + ' / 前 7 天 ' + prior + '）';
+}
+
+function summarizeCluster(meta, items, previous = {}) {
+  const demandCount = items.length;
+  const demandStrength = average(items, 'demandStrength');
+  const painScore = average(items, 'painScore');
+  const paymentSignalCount = items.filter(x => x.paymentEvidence).length;
+  const paymentScore = average(items, 'paymentScore');
+  const frequencyScore = Math.round(Math.min(100, Math.log2(demandCount + 1) / Math.log2(20) * 100));
+  const competition = items.find(x => x.competitionLevel !== 'unknown' && x.competitionEvidence);
+  const competitionLevel = competition?.competitionLevel || 'unknown';
+  const competitionGap = { high: 20, medium: 50, low: 80, unknown: 50 }[competitionLevel];
+  const opportunityScore = Math.round(demandStrength * .35 + frequencyScore * .2 + painScore * .2 + paymentScore * .2 + competitionGap * .05);
+  const verdict = demandCount < 3 ? '初步线索，继续收集样本' : opportunityScore >= 70 ? '这个需求值得关注' : opportunityScore >= 50 ? '值得持续观察' : '暂缓投入';
+  return {
+    ...meta, name: meta.name || items[0]?.clusterName || '未命名需求', demandCount, paymentSignalCount,
+    demandStrength, painScore, paymentScore, frequencyScore, opportunityScore, verdict,
+    competitionLevel, competitionEvidence: competition?.competitionEvidence || '',
+    painPoints: unique(items.map(x => x.painPoint), 4), targetUsers: unique(items.map(x => x.targetUsers), 4),
+    currentSolutions: unique(items.map(x => x.currentSolution), 4),
+    possibleDirections: unique(items.flatMap(x => x.directions), 5),
+    quotes: items.slice().sort((a, b) => b.demandStrength - a.demandStrength).slice(0, 3).map(x => ({ text: x.needEvidence, url: x.url, postId: x.postId })),
+    sourceIds: items.map(x => x.postId), trend: trendOf(items),
+    inPool: !!previous.inPool, favorite: !!previous.favorite, note: previous.note || '', tags: previous.tags || [],
+    firstSeenAt: previous.firstSeenAt || Date.now(), updatedAt: Date.now()
+  };
+}
+
+module.exports = { scanCandidate, parseAI, validateBatch, normalizeName, summarizeCluster, trendOf };
+
+},
+"popup/demand-ui": function(require, module, exports) {
+'use strict';
+
+function mountDemandUI({ field, rpc, error }) {
+  let opportunities = [], selectedId = '';
+  const button = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); return b; };
+  const textRow = (box, label, value) => {
+    const p = document.createElement('p'), strong = document.createElement('strong');
+    strong.textContent = label + '：';
+    p.append(strong, document.createTextNode(String(value ?? '未观察到'))); box.append(p);
+  };
+
+  function filtered() {
+    const query = field('opp-search').value.trim().toLowerCase();
+    const view = field('opp-view').value;
+    const sort = field('opp-sort').value;
+    return opportunities.filter(x => (view !== 'pool' || x.inPool) &&
+      (!query || [x.name, ...(x.painPoints || []), ...(x.targetUsers || []), ...(x.possibleDirections || [])].join(' ').toLowerCase().includes(query)))
+      .sort((a, b) => sort === 'count' ? b.demandCount - a.demandCount : sort === 'recent' ? b.updatedAt - a.updatedAt : b.opportunityScore - a.opportunityScore);
+  }
+
+  function detail() {
+    const box = field('opp-detail'); box.replaceChildren();
+    const rec = opportunities.find(x => x.id === selectedId);
+    if (!rec) return;
+    const title = document.createElement('strong'); title.textContent = rec.name; box.append(title);
+    for (const [label, value] of [
+      ['出现次数', rec.demandCount], ['付费信号次数', rec.paymentSignalCount],
+      ['需求强度', rec.demandStrength], ['频率分', rec.frequencyScore], ['痛点程度', rec.painScore],
+      ['付费意愿', rec.paymentScore], ['机会评分', rec.opportunityScore], ['判断', rec.verdict],
+      ['典型原话', (rec.quotes || []).map(x => '“' + x.text + '”').join('；')],
+      ['用户痛点', (rec.painPoints || []).join('；')], ['目标用户', (rec.targetUsers || []).join('；')],
+      ['需求趋势', rec.trend], ['当前解决方案', (rec.currentSolutions || []).join('；')],
+      ['竞争线索', rec.competitionLevel === 'unknown' ? '讨论样本不足' : rec.competitionLevel + ' · ' + rec.competitionEvidence],
+      ['可能可以做／卖', (rec.possibleDirections || []).join('；')],
+      ['备注', rec.note || '无'], ['标签', (rec.tags || []).join('、') || '无']
+    ]) textRow(box, label, value);
+    const actions = document.createElement('div'); actions.className = 'button-row';
+    if (!rec.inPool) actions.append(button('加入机会池', () => change('addToPool', { id: rec.id })));
+    else actions.append(
+      button(rec.favorite ? '取消收藏' : '收藏', () => change('update', { id: rec.id, patch: { favorite: !rec.favorite } })),
+      button('备注', () => { const note = prompt('机会备注', rec.note || ''); if (note !== null) change('update', { id: rec.id, patch: { note } }); }),
+      button('标签', () => { const tags = prompt('标签，逗号分隔', (rec.tags || []).join(', ')); if (tags !== null) change('update', { id: rec.id, patch: { tags } }); }),
+      button('移出机会池', () => { if (confirm('将此需求移出机会池？发现记录会保留。')) change('remove', { id: rec.id }); })
+    );
+    for (const [index, quote] of (rec.quotes || []).entries()) if (quote.url) actions.append(button('打开原讨论 ' + (index + 1), () => chrome.tabs.create({ url: quote.url })));
+    box.append(actions);
+  }
+
+  function render() {
+    const list = field('opp-list'); list.replaceChildren();
+    const items = filtered();
+    if (!items.length) { const li = document.createElement('li'); li.className = 'opp-empty'; li.textContent = field('opp-view').value === 'pool' ? '机会池为空：请先从发现的需求中确认' : '暂无需求机会；请在 X 页面手动扫描'; list.append(li); }
+    for (const rec of items) {
+      const li = document.createElement('li'); li.className = 'opp-item';
+      li.append(button(rec.name + ' · ' + rec.demandCount + ' 次 · 机会 ' + rec.opportunityScore + (rec.inPool ? ' ✓' : ''), () => { selectedId = rec.id; detail(); }));
+      const snippet = document.createElement('div'); snippet.className = 'opp-snippet';
+      snippet.textContent = '付费信号 ' + rec.paymentSignalCount + ' 次 · ' + (rec.possibleDirections?.[0] || '查看可能方向');
+      li.append(snippet); list.append(li);
+    }
+    detail();
+  }
+
+  async function refresh() {
+    try { opportunities = await rpc('list'); render(); }
+    catch (e) { error.textContent = e.message; }
+  }
+  async function change(action, payload) {
+    try { await rpc(action, payload); error.textContent = ''; await refresh(); }
+    catch (e) { error.textContent = e.message; }
+  }
+  for (const id of ['opp-search', 'opp-view', 'opp-sort']) field(id).addEventListener(id === 'opp-search' ? 'input' : 'change', render);
+  field('opp-refresh').addEventListener('click', refresh);
+  refresh();
+  return { refresh, render };
+}
+
+module.exports = mountDemandUI;
 
 }
 };

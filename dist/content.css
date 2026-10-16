@@ -27,6 +27,15 @@
 #xp-inline-tip .xp-fav-btn:disabled{opacity:.5;cursor:default}
 #xp-inline-hud{position:fixed!important;left:12px!important;bottom:12px!important;z-index:2147483647!important;padding:7px 12px!important;background:#17232dee!important;color:#ade6d9!important;border:1px solid #527c7155!important;border-radius:9px!important;font:11px/1.4 monospace!important;pointer-events:none!important}
 @media(prefers-reduced-motion:no-preference){.xp-count{transition:filter .15s ease}.xp-badge:hover .xp-count{filter:brightness(1.12)}}
-.xp-post-badge{display:inline-flex!important;align-items:center!important;gap:6px!important;font:600 11px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important;color:#536471!important;padding:2px 0!important;white-space:nowrap!important}
-.xp-highlight{box-shadow:inset 3px 0 0 #1d9bf0!important}
-.xp-collapsed{opacity:.35!important}
+.xp-opp-panel{padding:10px!important;margin:8px 0!important;border:1px solid #15a18b55!important;border-radius:10px!important;background:#15a18b12!important;color:inherit!important;font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important}
+.xp-opp-head,.xp-opp-actions{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:8px!important;flex-wrap:wrap!important}
+.xp-opp-button,.xp-opp-marker{border:1px solid #15a18b88!important;border-radius:7px!important;background:#15a18b22!important;color:#148572!important;padding:5px 8px!important;font:600 11px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important;cursor:pointer!important}
+.xp-opp-button:disabled{opacity:.5!important;cursor:default!important}
+.xp-opp-marker{display:inline-block!important;margin:7px 4px!important}
+.xp-opp-medium{border-color:#1d9bf088!important;color:#1d9bf0!important;background:#1d9bf022!important}
+.xp-opp-low{border-color:#7a899588!important;color:#697782!important;background:#7a899522!important}
+.xp-opp-stats{margin:7px 0!important;font-size:11px!important}.xp-opp-error{color:#d84646!important;font-size:11px!important}
+.xp-opp-list{display:flex!important;flex-direction:column!important;align-items:flex-start!important;gap:5px!important;margin-top:8px!important;max-height:220px!important;overflow:auto!important}
+.xp-opp-modal{position:fixed!important;inset:0!important;z-index:2147483647!important;display:flex!important;align-items:center!important;justify-content:center!important;background:#0009!important}
+.xp-opp-card{background:#fff!important;color:#17232d!important;border-radius:13px!important;padding:18px!important;width:min(540px,calc(100vw - 24px))!important;max-height:85vh!important;overflow:auto!important;font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft Yahei",sans-serif!important}
+.xp-opp-card h2{font-size:16px!important;margin:0 0 8px!important}.xp-opp-detail-row{margin:6px 0!important;overflow-wrap:anywhere!important}.xp-opp-detail-row strong{display:inline!important}.xp-opp-actions{justify-content:flex-start!important;margin-top:14px!important}

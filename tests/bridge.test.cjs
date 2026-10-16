@@ -30,6 +30,15 @@ test('field whitelist strips private fields before forwarding',async()=>{
   assert.equal(forwarded.data.user.legacy.followers_count,100);
   assert.equal(forwarded.data.user.legacy.screen_name,'demo');
 });
+test('field whitelist preserves reply relationships but strips credentials',async()=>{
+  const response=new Response(JSON.stringify({data:{tweet:{__typename:'Tweet',rest_id:'2',legacy:{full_text:'求推荐工具',in_reply_to_status_id_str:'1',conversation_id_str:'1',authorization:'secret'}}}}));
+  const f=fixture(()=>Promise.resolve(response));
+  await f.window.fetch('https://x.com/i/api/graphql/id/TweetDetail');await settle();
+  const forwarded=JSON.parse(f.messages[0].bodyText).data.tweet.legacy;
+  assert.equal(forwarded.in_reply_to_status_id_str,'1');
+  assert.equal(forwarded.conversation_id_str,'1');
+  assert.equal('authorization' in forwarded,false);
+});
 test('XHR handles JSON responses and malformed text safely',()=>{
   const f=fixture(()=>{});const xhr=new f.XMLHttpRequest();xhr.open('GET','/i/api/graphql/id/UserByScreenName');xhr.send();xhr.status=200;xhr.responseType='json';xhr.response={core:{screen_name:'demo'},legacy:{followers_count:0}};xhr.callback();assert.equal(C.extractUsers(JSON.parse(f.messages[0].bodyText))[0].followers,0);
   xhr.responseType='text';xhr.responseText='not json';assert.doesNotThrow(()=>xhr.callback());

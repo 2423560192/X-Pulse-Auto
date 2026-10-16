@@ -1,15 +1,5 @@
 'use strict';
-// Pure metric calculations: engagement rate, follower ratio, account age.
-
-function calculateEngagement(metrics) {
-  if (!metrics || typeof metrics !== 'object') return null;
-  const keys = ['likes', 'replies', 'reposts', 'quotes', 'views'];
-  if (!keys.every(k => Number.isSafeInteger(metrics[k]) && metrics[k] >= 0)) return null;
-  if (metrics.views === 0) return null;
-  const total = metrics.likes + metrics.replies + metrics.reposts + metrics.quotes;
-  if (!Number.isSafeInteger(total)) return null;
-  return total / metrics.views * 100;
-}
+// Account detail calculations.
 
 function getFollowerRatio(user) {
   if (!user || !Number.isSafeInteger(user.followers) || user.followers < 0) return null;
@@ -30,4 +20,4 @@ function getAccountAge(user, now = Date.now()) {
   return { years, months, totalMonths: years * 12 + months };
 }
 
-module.exports = { calculateEngagement, getFollowerRatio, getAccountAge };
+module.exports = { getFollowerRatio, getAccountAge };

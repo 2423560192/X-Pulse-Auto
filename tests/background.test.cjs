@@ -2,22 +2,28 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 
 let storage={};
-let listener=null;
+let listeners=[];
+let permission=true;
 function reset(){ storage={}; }
 
 global.chrome={
   alarms:{clear:async()=>{}},
   storage:{local:{get:async()=>({...storage}),set:async(v)=>{storage={...storage,...v};},remove:async()=>{}}},
-  runtime:{onInstalled:{addListener(){}},onMessage:{addListener(fn){listener=fn;}},lastError:null}
+  permissions:{contains:async()=>permission},
+  runtime:{onInstalled:{addListener(){}},onMessage:{addListener(fn){listeners.push(fn);}},lastError:null}
 };
 require('../src/background.js');
 
 function send(action, payload){
   return new Promise(resolve=>{
-    const ret=listener({type:'xp-favorite',action,payload},{},resolve);
+    const ret=listeners.map(fn=>fn({type:'xp-favorite',action,payload},{},resolve)).find(x=>x===true);
     assert.equal(ret,true);
   });
 }
+function sendOpp(action,payload){return new Promise(resolve=>{
+  const ret=listeners.map(fn=>fn({type:'xp-opportunity',action,payload},{},resolve)).find(x=>x===true);
+  assert.equal(ret,true);
+});}
 
 test('concurrent favorite writes are serialized without losing updates',async()=>{
   reset();
@@ -37,4 +43,13 @@ test('unknown action reports error',async()=>{
   reset();
   const r=await send('nope',{});
   assert.equal(r.ok,false);
+});
+test('AI connection refuses revoked host permission',async()=>{
+  reset();permission=false;
+  const saved=await sendOpp('saveAI',{ai:{baseUrl:'https://example.com/v1',apiKey:'secret',model:'m',temperature:.2,timeout:30000}});
+  assert.equal(saved.ok,true);
+  const tested=await sendOpp('testAI',{});
+  assert.equal(tested.ok,false);
+  assert.match(tested.error,/权限/);
+  permission=true;
 });

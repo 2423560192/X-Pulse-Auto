@@ -11,6 +11,7 @@ const version = require('../version.js');
 const config = require('../shared/config.js');
 const favorites = require('../shared/favorites.js');
 const exporter = require('../shared/exporter.js');
+const attachAIConnection = require('./ai-connection.js');
 
 const KEY = 'xp_inline_settings';
 let cfg = config.config();
@@ -159,87 +160,188 @@ refreshFavorites();
 diagnostics();
 setInterval(diagnostics, 1500);
 
+function opportunityRpc(action, payload = {}) {
+  return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    if (!response?.ok) return reject(new Error(response?.error || '商机操作失败'));
+    resolve(response.result);
+  }));
+}
+const field = id => document.getElementById(id);
+function productInput() {
+  return {
+    enabled: field('product-enabled').checked, name: field('product-name').value,
+    description: field('product-description').value, problem: field('product-problem').value,
+    targetUsers: field('product-target').value, capabilities: field('product-capabilities').value,
+    keywords: field('product-keywords').value, excludeKeywords: field('product-exclusions').value,
+    budget: field('product-budget').value
+  };
+}
+function aiInput() {
+  return {
+    baseUrl: field('ai-base').value, apiKey: field('ai-key').value, model: field('ai-model').value,
+    temperature: Number(field('ai-temperature').value), timeout: Number(field('ai-timeout').value)
+  };
+}
+function paintProduct(product) {
+  if (!product) return;
+  field('product-enabled').checked = !!product.enabled;
+  for (const [id, value] of [
+    ['product-name', product.name], ['product-description', product.description], ['product-problem', product.problem],
+    ['product-target', product.targetUsers], ['product-capabilities', product.capabilities],
+    ['product-keywords', (product.keywords || []).join(', ')], ['product-exclusions', (product.excludeKeywords || []).join(', ')],
+    ['product-budget', product.budget]
+  ]) field(id).value = value || '';
+}
+function paintAI(ai) {
+  if (!ai) return;
+  field('ai-base').value = ai.baseUrl;
+  field('ai-model').value = ai.model;
+  field('ai-temperature').value = ai.temperature;
+  field('ai-timeout').value = ai.timeout;
+  field('ai-key').value = '';
+  field('ai-status').textContent = ai.verified ? '连接已测试，可以开始扫描' : ai.hasKey ? '已保存 Key，需测试连接' : '尚未设置 API Key';
+}
+
+opportunityRpc('config').then(({ product, ai }) => { paintProduct(product); paintAI(ai); }).catch(e => { error.textContent = e.message; });
+field('save-product').addEventListener('click', async () => {
+  try { paintProduct(await opportunityRpc('saveProduct', { product: productInput() })); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+});
+field('save-ai').addEventListener('click', async () => {
+  try { paintAI(await opportunityRpc('saveAI', { ai: aiInput() })); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+});
+attachAIConnection({
+  button: field('test-ai'), status: field('ai-status'), readInput: aiInput,
+  requestPermission: details => chrome.permissions.request(details),
+  rpc: opportunityRpc, paintAI, clearError: () => { error.textContent = ''; }
+});
+
+let opportunityList = [], selectedOpportunity = '';
+function filteredOpportunities() {
+  const q = field('opp-search').value.trim().toLowerCase();
+  const filter = field('opp-filter').value;
+  const order = field('opp-sort').value;
+  const items = opportunityList.filter(x => {
+    if (q && ![x.authorHandle, x.authorName, x.need, x.commentText, x.productName].join(' ').toLowerCase().includes(q)) return false;
+    if (filter === 'high' && x.opportunityScore < 80) return false;
+    if (filter === 'medium' && (x.opportunityScore < 60 || x.opportunityScore >= 80)) return false;
+    if (filter === 'low' && x.opportunityScore >= 60) return false;
+    if (!['all', 'high', 'medium', 'low'].includes(filter) && x.opportunityType !== filter) return false;
+    return true;
+  });
+  const get = {
+    priority: x => x.priorityScore, recent: x => x.createdAt, followers: x => x.authorFollowers || 0,
+    strength: x => x.opportunityScore, fit: x => x.productFitScore
+  }[order];
+  return items.sort((a, b) => get(b) - get(a));
+}
+function oppButton(label, fn) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); return b; }
+function renderOpportunityDetail() {
+  const box = field('opp-detail'); box.replaceChildren();
+  const rec = opportunityList.find(x => x.id === selectedOpportunity);
+  if (!rec) return;
+  const heading = document.createElement('strong'); heading.textContent = (rec.authorName || rec.authorHandle) + ' @' + rec.authorHandle; box.append(heading);
+  for (const [label, value] of [
+    ['粉丝', rec.authorFollowers ?? '未知'], ['关注', rec.authorFollowing ?? '未知'], ['原帖', rec.parentPostText],
+    ['评论', rec.commentText], ['类型', rec.opportunityType], ['需求', rec.need], ['痛点', rec.painPoint],
+    ['商机强度', rec.opportunityScore], ['产品匹配', rec.productFitScore], ['优先级', rec.priorityScore],
+    ['依据', rec.evidence], ['匹配理由', rec.fitReason], ['预算', rec.budgetSignal],
+    ['备注', rec.note || '无'], ['标签', (rec.tags || []).join('、') || '无'],
+    ['发现时间', new Date(rec.createdAt).toLocaleString('zh-CN')]
+  ]) {
+    const p = document.createElement('p');
+    const strong = document.createElement('strong'); strong.textContent = label + '：';
+    p.append(strong, document.createTextNode(String(value ?? ''))); box.append(p);
+  }
+  const actions = document.createElement('div'); actions.className = 'button-row';
+  actions.append(
+    oppButton(rec.favorite ? '取消收藏' : '收藏', () => editOpportunity(rec, { favorite: !rec.favorite })),
+    oppButton('备注', () => { const note = prompt('商机备注', rec.note || ''); if (note !== null) editOpportunity(rec, { note }); }),
+    oppButton('标签', () => { const tags = prompt('标签，逗号分隔', (rec.tags || []).join(', ')); if (tags !== null) editOpportunity(rec, { tags }); }),
+    oppButton('打开评论', () => chrome.tabs.create({ url: rec.commentUrl })),
+    oppButton('打开用户', () => rec.authorHandle && chrome.tabs.create({ url: 'https://x.com/' + rec.authorHandle })),
+    oppButton('删除', () => deleteOpportunity(rec))
+  ); box.append(actions);
+}
+function renderOpportunities() {
+  const list = field('opp-list'); list.replaceChildren();
+  const items = filteredOpportunities();
+  if (!items.length) { const empty = document.createElement('li'); empty.className = 'opp-empty'; empty.textContent = '暂无匹配商机'; list.append(empty); }
+  for (const rec of items) {
+    const li = document.createElement('li'); li.className = 'opp-item';
+    const b = oppButton('@' + (rec.authorHandle || 'unknown') + ' · 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => { selectedOpportunity = rec.id; renderOpportunityDetail(); });
+    const snippet = document.createElement('div'); snippet.className = 'opp-snippet'; snippet.textContent = rec.need || rec.commentText;
+    li.append(b, snippet); list.append(li);
+  }
+  renderOpportunityDetail();
+}
+async function refreshOpportunities() {
+  try { opportunityList = await opportunityRpc('list'); renderOpportunities(); }
+  catch (e) { error.textContent = e.message; }
+}
+async function editOpportunity(rec, patch) {
+  try { await opportunityRpc('update', { id: rec.id, patch }); await refreshOpportunities(); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+}
+async function deleteOpportunity(rec) {
+  if (!confirm('删除这条商机？再次手动扫描时可能重新发现。')) return;
+  try { await opportunityRpc('remove', { id: rec.id }); selectedOpportunity = ''; await refreshOpportunities(); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+}
+for (const id of ['opp-search', 'opp-filter', 'opp-sort']) field(id).addEventListener(id === 'opp-search' ? 'input' : 'change', renderOpportunities);
+refreshOpportunities();
+
 },
 "version": function(require, module, exports) {
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '2.0.0';
+module.exports = '3.0.0';
 
 },
 "shared/config": function(require, module, exports) {
 'use strict';
-// V2 settings: legacy flat fields + nested groups, with type validation,
-// clamping, keyword normalization, and old->new field migration.
+// Keep legacy badge settings and the account detail/favorite switches.
 
 const legacy = require('./settings.js');
 
 const DEFAULTS = {
-  schemaVersion: 2,
-  account: { showFollowers: true, showRatio: true, showAge: true, showTier: true },
-  post: { enabled: true, showEngagementRate: true, highlightHighEngagement: false, rateThreshold: 2, minViews: 1000 },
-  filters: { enabled: false, mode: 'highlight', includeKeywords: [], excludeKeywords: [] },
-  favorites: { enabled: true }
+  schemaVersion: 3,
+  account: { showRatio: true, showAge: true, showTier: true },
+  favorites: { enabled: true },
+  opportunity: { badgeLevel: 'high' }
 };
 
-const MAX_KEYWORDS = 200;
-const MAX_KEYWORD_LENGTH = 60;
-
 function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
-function number(value, fallback, min, max) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
-}
 function oneOf(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
-function keywords(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const k = item.trim().slice(0, MAX_KEYWORD_LENGTH);
-    if (k && !out.includes(k)) out.push(k);
-    if (out.length >= MAX_KEYWORDS) break;
-  }
-  return out;
-}
 
 function config(input = {}) {
   const flat = legacy.settings(input); // legacy flat fields keep working unchanged
 
   const account = { ...DEFAULTS.account };
-  const post = { ...DEFAULTS.post };
-  const filters = { ...DEFAULTS.filters };
   const favorites = { ...DEFAULTS.favorites };
+  const opportunity = { ...DEFAULTS.opportunity };
 
   if (input && typeof input === 'object') {
     if (input.account && typeof input.account === 'object') {
-      account.showFollowers = bool(input.account.showFollowers, account.showFollowers);
       account.showRatio = bool(input.account.showRatio, account.showRatio);
       account.showAge = bool(input.account.showAge, account.showAge);
       account.showTier = bool(input.account.showTier, account.showTier);
     }
-    if (input.post && typeof input.post === 'object') {
-      post.enabled = bool(input.post.enabled, post.enabled);
-      post.showEngagementRate = bool(input.post.showEngagementRate, post.showEngagementRate);
-      post.highlightHighEngagement = bool(input.post.highlightHighEngagement, post.highlightHighEngagement);
-      post.rateThreshold = number(input.post.rateThreshold, post.rateThreshold, 0, 1000);
-      post.minViews = number(input.post.minViews, post.minViews, 0, Number.MAX_SAFE_INTEGER);
-    }
-    if (input.filters && typeof input.filters === 'object') {
-      filters.enabled = bool(input.filters.enabled, filters.enabled);
-      filters.mode = oneOf(input.filters.mode, ['highlight', 'collapse'], filters.mode);
-      filters.includeKeywords = keywords(input.filters.includeKeywords);
-      filters.excludeKeywords = keywords(input.filters.excludeKeywords);
-    }
     if (input.favorites && typeof input.favorites === 'object') {
       favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
     }
+    if (input.opportunity && typeof input.opportunity === 'object') {
+      opportunity.badgeLevel = oneOf(input.opportunity.badgeLevel, ['all', 'medium', 'high'], opportunity.badgeLevel);
+    }
   }
 
-  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, post, filters, favorites };
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites, opportunity };
 }
 
-module.exports = { defaults: DEFAULTS, config, bool, number, oneOf, keywords };
+module.exports = { defaults: DEFAULTS, config, bool, oneOf };
 
 },
 "shared/settings": function(require, module, exports) {
@@ -437,6 +539,214 @@ function downloadFile(content, filename, mimeType) {
 }
 
 module.exports = { escapeCSV, exportFavoritesCSV, exportFavoritesJSON, downloadFile };
+
+},
+"popup/ai-connection": function(require, module, exports) {
+'use strict';
+
+const aiClient = require('../shared/ai-client.js');
+
+function attachAIConnection({ button, status, readInput, requestPermission, rpc, paintAI, clearError, now = () => new Date() }) {
+  let busy = false;
+  const label = button.textContent;
+  button.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    button.disabled = true;
+    button.textContent = '测试中…';
+    clearError();
+    status.dataset.state = 'pending';
+    status.textContent = '正在检查 AI 服务地址…';
+    try {
+      const input = readInput();
+      const origin = aiClient.originPattern(input.baseUrl);
+      status.textContent = '正在申请 AI 服务域名权限…';
+      // Call permissions.request before the first await to retain the click gesture.
+      const permission = requestPermission({ origins: [origin] });
+      if (!(await permission)) throw new Error('未授予 AI 服务域名权限');
+      status.textContent = '正在保存 AI 设置…';
+      paintAI(await rpc('saveAI', { ai: input }));
+      status.dataset.state = 'pending';
+      status.textContent = '正在连接 AI 服务，请稍候（最长 ' + Math.ceil((input.timeout || 30000) / 1000) + ' 秒）…';
+      await rpc('testAI');
+      status.dataset.state = 'success';
+      status.textContent = '连接测试成功（' + now().toLocaleTimeString('zh-CN', { hour12: false }) + '），可以开始扫描';
+    } catch (e) {
+      status.dataset.state = 'error';
+      status.textContent = '连接测试失败：' + (e?.message || String(e));
+    } finally {
+      busy = false;
+      button.disabled = false;
+      button.textContent = label;
+    }
+  });
+}
+
+module.exports = attachAIConnection;
+
+},
+"shared/ai-client": function(require, module, exports) {
+'use strict';
+
+const opportunity = require('./opportunity.js');
+
+function endpointOf(base) {
+  let url;
+  try { url = new URL(String(base || '').trim()); } catch { throw new Error('API Base URL 无效'); }
+  if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)))) throw new Error('AI 地址必须是 HTTPS 或本机 HTTP');
+  const path = url.pathname.replace(/\/+$/, '');
+  url.pathname = path.endsWith('/chat/completions') ? path : path + '/chat/completions';
+  return url.href;
+}
+
+function originPattern(base) {
+  const url = new URL(endpointOf(base));
+  return url.protocol + '//' + url.hostname + '/*';
+}
+
+async function requestChat(settings, messages, maxTokens, fetchImpl = fetch) {
+  const endpoint = endpointOf(settings.baseUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), settings.timeout || 30000);
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.apiKey },
+      body: JSON.stringify({ model: settings.model, temperature: settings.temperature, max_tokens: maxTokens, messages }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('AI 接口返回 HTTP ' + response.status);
+    const body = await response.text();
+    if (body.length > 250000) throw new Error('AI 响应过大');
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { throw new Error('AI 接口响应格式无效'); }
+    const content = parsed?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') throw new Error('AI 接口未返回文本');
+    return content;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('AI 请求超时');
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
+
+const SYSTEM = [
+  '你是 X 评论商机分析器。只输出 JSON 对象 {"results":[...]}，逐条对应输入 comment_id，不得遗漏或重复。',
+  '只根据原帖、回复上下文、评论和产品资料判断，不得编造预算、购买意愿或未出现的事实。粉丝数不能单独决定商机分数。',
+  '每项包含 comment_id,is_opportunity,opportunity_type,intent_score,pain_score,commercial_score,urgency,product_fit_score,need,pain_point,budget_signal,fit_reason,evidence,confidence。',
+  '分数为 0-100 数字；urgency 为 high/medium/low/unknown；confidence 为 0-1。budget_signal 未明确提到时写 unknown。',
+  'evidence 必须逐字摘录自该评论或提供的原帖/回复上下文；没有商机时 is_opportunity=false、opportunity_type=not_opportunity、evidence 可为空。',
+  'opportunity_type 只用 tool_request,solution_request,api_request,purchase_intent,service_request,pain_point,outsourcing,collaboration,recommendation,other,not_opportunity。'
+].join('\n');
+
+async function analyze(settings, product, items, fetchImpl = fetch) {
+  const payload = items.map(x => ({ comment_id: x.comment_id, parent_post: x.parent_post, reply_parent: x.reply_parent || '', comment: x.comment, author: x.author }));
+  const prompt = JSON.stringify({ product, comments: payload });
+  const response = await requestChat(settings, [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }], Math.min(8000, 800 + items.length * 550), fetchImpl);
+  return opportunity.validateBatch(opportunity.parseAI(response), payload);
+}
+
+async function testConnection(settings, fetchImpl = fetch) {
+  const content = await requestChat(settings, [{ role: 'user', content: 'Reply with OK.' }], 8, fetchImpl);
+  if (!content.trim()) throw new Error('AI 连接测试未返回内容');
+  return true;
+}
+
+module.exports = { endpointOf, originPattern, requestChat, analyze, testConnection };
+
+},
+"shared/opportunity": function(require, module, exports) {
+'use strict';
+// Pure rules, reply selection, AI result validation, and deterministic scoring.
+
+const TYPES = new Set(['tool_request', 'solution_request', 'api_request', 'purchase_intent', 'service_request', 'pain_point', 'outsourcing', 'collaboration', 'recommendation', 'other', 'not_opportunity']);
+const NEED = /有没有|求推荐|推荐一下|什么工具|有什么工具|找一个|寻找|求一个|哪里有|谁能|有没有人做|需要|求助|怎么解决|looking for|recommend|need a|any tool|how can i/i;
+const TOOL = /工具|软件|平台|saas|api|插件|系统|自动化|ai|app|service|integration/i;
+const PAIN = /太麻烦|效率低|人工|耗时|不会|做不出来|成本高|太贵|一直失败|很难|痛点|费时|slow|expensive|struggling|difficult/i;
+const COMMERCIAL = /多少钱|价格|购买|付费|收费|报价|预算|采购|合作|外包|付钱|pay|buy|price|budget|hire/i;
+const TRIVIAL = /^(?:哈+|确实|赞|支持|第一|6+|牛|牛逼|👍+|😂+|🤣+|🔥+)$/i;
+
+function ruleMatch(text, product = {}) {
+  const value = String(text || '').trim();
+  if (!value || value.length < 2 || TRIVIAL.test(value) || !/[\p{L}\p{N}]/u.test(value)) return false;
+  if (/加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i.test(value)) return false;
+  const excluded = Array.isArray(product.excludeKeywords) ? product.excludeKeywords : [];
+  if (excluded.some(k => k && value.toLowerCase().includes(String(k).toLowerCase()))) return false;
+  return NEED.test(value) || PAIN.test(value) || COMMERCIAL.test(value) || (TOOL.test(value) && /求|找|需要|推荐|有没有|can|need|looking/i.test(value));
+}
+
+function belongsToThread(post, rootId, byId) {
+  if (!post?.isReply || post.isQuote || post.id === rootId) return false;
+  if (post.conversationId === rootId) return true;
+  const visited = new Set([post.id]);
+  let parentId = post.inReplyToId;
+  for (let depth = 0; parentId && depth < 30; depth++) {
+    if (parentId === rootId) return true;
+    if (visited.has(parentId)) return false;
+    visited.add(parentId);
+    parentId = byId.get(parentId)?.inReplyToId;
+  }
+  return false;
+}
+
+function commentsForThread(posts, rootId) {
+  const byId = new Map(posts.map(p => [p.id, p]));
+  return posts.filter(p => belongsToThread(p, rootId, byId)).sort((a, b) => (a.observedAt || 0) - (b.observedAt || 0));
+}
+
+function validProduct(p) {
+  return !!(p && p.enabled && ['name', 'description', 'problem', 'targetUsers', 'capabilities'].every(k => typeof p[k] === 'string' && p[k].trim()));
+}
+
+function signature(comment, product, model, endpoint) {
+  return JSON.stringify([comment.id, comment.text, comment.parentPost || '', comment.replyParent || '', product, model, endpoint]);
+}
+
+function parseAI(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { return JSON.parse(cleaned); } catch { throw new Error('AI 返回的不是有效 JSON'); }
+}
+
+function score(result) {
+  const urgency = { high: 100, medium: 50, low: 0, unknown: 0 }[result.urgency];
+  const opportunityScore = Math.round(result.intent_score * .4 + result.pain_score * .25 + result.commercial_score * .2 + urgency * .15);
+  const priorityScore = Math.round((opportunityScore * .6 + result.product_fit_score * .4) * 10) / 10;
+  return { opportunityScore, priorityScore };
+}
+
+function validateResult(raw, requested) {
+  if (!raw || typeof raw !== 'object' || typeof raw.comment_id !== 'string' || !requested.has(raw.comment_id)) throw new Error('AI 结果缺少对应评论 ID');
+  if (typeof raw.is_opportunity !== 'boolean' || !TYPES.has(raw.opportunity_type)) throw new Error('AI 商机类型无效');
+  for (const field of ['intent_score', 'pain_score', 'commercial_score', 'product_fit_score']) {
+    if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
+  }
+  if (!['high', 'medium', 'low', 'unknown'].includes(raw.urgency)) throw new Error('AI 紧迫度无效');
+  if (!Number.isFinite(raw.confidence) || raw.confidence < 0 || raw.confidence > 1) throw new Error('AI 置信度无效');
+  for (const field of ['need', 'pain_point', 'budget_signal', 'fit_reason', 'evidence']) {
+    if (typeof raw[field] !== 'string' || raw[field].length > 1000) throw new Error('AI 字段无效：' + field);
+  }
+  const source = requested.get(raw.comment_id);
+  if (!raw.is_opportunity && raw.opportunity_type !== 'not_opportunity') throw new Error('AI 非商机类型矛盾');
+  if (raw.is_opportunity && (!raw.need.trim() || !raw.fit_reason.trim())) throw new Error('AI 商机缺少需求或匹配理由');
+  if (raw.is_opportunity && (!raw.evidence.trim() || ![source.comment, source.parent_post, source.reply_parent || ''].some(t => t.includes(raw.evidence)))) throw new Error('AI 判断依据不在原文中');
+  if (raw.is_opportunity && raw.opportunity_type === 'not_opportunity') throw new Error('AI 商机类型矛盾');
+  if (raw.budget_signal.toLowerCase() !== 'unknown' && !/预算|价格|多少钱|付费|购买|买|采购|报价|收费|pay|buy|budget|price|cost/i.test(source.comment)) throw new Error('评论没有明确预算或付费信号');
+  return { ...raw, ...score(raw) };
+}
+
+function validateBatch(parsed, items) {
+  if (!parsed || !Array.isArray(parsed.results)) throw new Error('AI 缺少 results 数组');
+  const requested = new Map(items.map(x => [x.comment_id, x]));
+  if (parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+  const seen = new Set();
+  return parsed.results.map(raw => {
+    const result = validateResult(raw, requested);
+    if (seen.has(result.comment_id)) throw new Error('AI 返回重复评论');
+    seen.add(result.comment_id);
+    return result;
+  });
+}
+
+module.exports = { ruleMatch, belongsToThread, commentsForThread, validProduct, signature, parseAI, score, validateResult, validateBatch, TYPES };
 
 }
 };

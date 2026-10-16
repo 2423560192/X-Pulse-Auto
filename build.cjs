@@ -27,7 +27,9 @@ const MODULES = {
   'shared/config': 'shared/config.js',
   'shared/tweet': 'shared/tweet.js',
   'shared/analytics': 'shared/analytics.js',
-  'shared/rules': 'shared/rules.js',
+  'shared/opportunity': 'shared/opportunity.js',
+  'shared/ai-client': 'shared/ai-client.js',
+  'shared/opportunity-store': 'shared/opportunity-store.js',
   'shared/exporter': 'shared/exporter.js',
   'shared/favorites': 'shared/favorites.js',
   'content/dom': 'content/dom.js',
@@ -36,8 +38,9 @@ const MODULES = {
   'content/layout': 'content/layout.js',
   'content/observer': 'content/observer.js',
   'content/diagnostics': 'content/diagnostics.js',
-  'content/renderer': 'content/renderer.js',
+  'content/opportunity-ui': 'content/opportunity-ui.js',
   'content/index': 'content/index.js',
+  'popup/ai-connection': 'popup/ai-connection.js',
   'popup/index': 'popup/index.js',
   'preview/index': 'preview/index.js'
 };

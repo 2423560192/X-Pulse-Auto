@@ -1,15 +1,50 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>X Pulse</title><link rel="stylesheet" href="popup.css"><style>.export-btns{display:flex;gap:6px}.export-btns button{background:#1a272f;color:#9ce4cc;border:1px solid #2b3b45;border-radius:6px;padding:4px 9px;font:inherit;font-size:10px;cursor:pointer}.export-btns button:hover{background:#22343f}.v2-title{margin:14px 0 4px;font-size:9px;letter-spacing:1px;color:#8da2af;text-transform:uppercase}.row input[type=number],.row textarea{background:#1a272f;border:1px solid #2b3b45;border-radius:6px;color:#edf3f5;padding:4px 7px;font:inherit;font-size:10px;width:90px}.row textarea{width:120px;resize:none;height:24px}.fav-section{margin-top:6px;border-top:1px solid #28353d;padding-top:12px}.fav-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}.fav-head strong{font-size:11px}.fav-head input{width:150px;background:#1a272f;border:1px solid #2b3b45;border-radius:6px;color:#edf3f5;padding:4px 7px;font:inherit;font-size:10px}.fav-head input::placeholder{color:#7e919f}#fav-list{list-style:none;margin:0;padding:0;max-height:180px;overflow:auto}.fav-item{padding:8px 0;border-bottom:1px solid #28353d}.fav-item:last-child{border-bottom:0}.fav-name{font-weight:600;font-size:11px;color:#edf3f5}.fav-note{font-size:10px;color:#80949f;margin-top:2px;white-space:pre-wrap}.fav-tags{font-size:9px;color:#5dccb7;margin-top:2px}.fav-actions{display:flex;gap:6px;margin-top:6px}.fav-actions button{background:#1a272f;color:#9ce4cc;border:1px solid #2b3b45;border-radius:6px;padding:3px 8px;font:inherit;font-size:10px;cursor:pointer}.fav-actions button:hover{background:#22343f}.fav-empty{padding:10px 0;color:#7e919f;font-size:10px}</style></head><body>
-<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>让每一个账号，都更清晰。</p></div><span class="version">2.0.0</span></header>
-<div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>推文 · 评论 · 关注与粉丝列表</p></div>
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>X Pulse</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>粉丝徽标 · 商机雷达</p></div><span class="version">3.0.0</span></header>
+<div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>在帖子详情页手动扫描已加载评论</p></div>
 <main>
-<label class="row"><span>自动显示粉丝数<small>装好即用，无需指定账号</small></span><input id="enabled" data-key="enabled" type="checkbox" role="switch"></label>
-<div class="preview" aria-label="徽标样式示例"><span>示例创作者 <small>@creator</small></span><b>● 1.29万 <small>粉丝</small></b></div>
-<label class="field" for="layout">徽标位置<select id="layout" data-key="layout"><option value="auto">自动适应宽度</option><option value="inline">放在用户名旁</option><option value="below">单独一行</option></select></label>
-<label class="field" for="format">人数显示<select id="format" data-key="format"><option value="compact">紧凑：1.29万</option><option value="exact">精确：12,984</option></select></label>
-<label class="row"><span>按粉丝量配色</span><input data-key="tierColors" type="checkbox" role="switch"></label>
-<label class="row"><span>悬停显示详情<small>精确人数、关注数量、关注关系</small></span><input data-key="hoverCard" type="checkbox" role="switch"></label>
-<label class="row"><span>显示互关 / 关注了你</span><input data-key="showRelation" type="checkbox" role="switch"></label><div class="v2-title">账号详情（悬停卡片）</div><label class="row"><span>粉丝档位标签</span><input data-path="account.showTier" type="checkbox" role="switch"></label><label class="row"><span>粉丝 / 关注比</span><input data-path="account.showRatio" type="checkbox" role="switch"></label><label class="row"><span>账号年龄</span><input data-path="account.showAge" type="checkbox" role="switch"></label><div class="v2-title">推文指标</div><label class="row"><span>推文指标徽标</span><input data-path="post.enabled" type="checkbox" role="switch"></label><label class="row"><span>互动率</span><input data-path="post.showEngagementRate" type="checkbox" role="switch"></label><label class="row"><span>高互动高亮</span><input data-path="post.highlightHighEngagement" type="checkbox" role="switch"></label><label class="row"><span>高亮阈值（%）</span><input data-path="post.rateThreshold" type="number" min="0" step="0.1"></label><label class="row"><span>最低浏览量</span><input data-path="post.minViews" type="number" min="0"></label><div class="v2-title">内容过滤</div><label class="row"><span>关键词过滤</span><input data-path="filters.enabled" type="checkbox" role="switch"></label><label class="row"><span>屏蔽词（逗号分隔）</span><textarea data-path="filters.excludeKeywords" rows="1" placeholder="Giveaway, Airdrop"></textarea></label><label class="row"><span>关注词（逗号分隔）</span><textarea data-path="filters.includeKeywords" rows="1" placeholder="AI Agent, Python"></textarea></label>
-<label class="row"><span>显示诊断信息<small>排查未出现徽标的问题</small></span><input data-key="debug" type="checkbox" role="switch"></label>
-<label class="row"><span>收藏导出<small>导出收藏与备注</small></span><span class="export-btns"><button type="button" id="export-csv">CSV</button><button type="button" id="export-json">JSON</button></span></label><div class="fav-section"><div class="fav-head"><strong>收藏管理</strong><input id="fav-search" type="search" placeholder="搜索账号 / 备注"></div><ul id="fav-list"></ul></div><p id="diagnostic" role="status">正在检查当前标签页…</p><p id="error" role="alert"></p>
-</main><footer>不增加请求 · 无后台监测页 · 数据仅在当前页面内存中<br>首次安装或更新后，请刷新 X 页面。</footer>
+<details><summary>粉丝徽标与账号收藏</summary>
+  <label class="row"><span>自动显示粉丝数</span><input id="enabled" data-key="enabled" type="checkbox" role="switch"></label>
+  <label class="field" for="layout">徽标位置<select id="layout" data-key="layout"><option value="auto">自动适应宽度</option><option value="inline">用户名旁</option><option value="below">单独一行</option></select></label>
+  <label class="field" for="format">人数显示<select id="format" data-key="format"><option value="compact">紧凑</option><option value="exact">精确</option></select></label>
+  <label class="row"><span>按粉丝量配色</span><input data-key="tierColors" type="checkbox" role="switch"></label>
+  <label class="row"><span>悬停显示详情</span><input data-key="hoverCard" type="checkbox" role="switch"></label>
+  <label class="row"><span>显示关注关系</span><input data-key="showRelation" type="checkbox" role="switch"></label>
+  <label class="row"><span>粉丝档位标签</span><input data-path="account.showTier" type="checkbox" role="switch"></label>
+  <label class="row"><span>粉丝／关注比</span><input data-path="account.showRatio" type="checkbox" role="switch"></label>
+  <label class="row"><span>账号年龄</span><input data-path="account.showAge" type="checkbox" role="switch"></label>
+  <label class="row"><span>显示诊断信息</span><input data-key="debug" type="checkbox" role="switch"></label>
+  <div class="section-head"><strong>账号收藏</strong><span><button id="export-csv" type="button">CSV</button> <button id="export-json" type="button">JSON</button></span></div>
+  <input id="fav-search" type="search" placeholder="搜索账号／备注"><ul id="fav-list"></ul>
+</details>
+<details><summary>我的产品</summary>
+  <label class="row"><span>启用当前产品</span><input id="product-enabled" type="checkbox" role="switch"></label>
+  <label class="stack">产品名称<input id="product-name" maxlength="100"></label>
+  <label class="stack">产品简介<textarea id="product-description" maxlength="1000"></textarea></label>
+  <label class="stack">解决的问题<textarea id="product-problem" maxlength="1000"></textarea></label>
+  <label class="stack">目标客户<textarea id="product-target" maxlength="1000"></textarea></label>
+  <label class="stack">核心能力<textarea id="product-capabilities" maxlength="1000"></textarea></label>
+  <label class="stack">关键词（逗号分隔）<input id="product-keywords"></label>
+  <label class="stack">排除关键词（逗号分隔）<input id="product-exclusions"></label>
+  <label class="stack">价格／预算范围（可选）<input id="product-budget"></label>
+  <button type="button" id="save-product">保存产品</button>
+</details>
+<details><summary>AI 设置</summary>
+  <label class="stack">API Base URL<input id="ai-base" type="url" value="https://api.openai.com/v1"></label>
+  <label class="stack">API Key<input id="ai-key" type="password" autocomplete="off" placeholder="留空则保留已保存的 Key"></label>
+  <label class="stack">Model<input id="ai-model" placeholder="模型名称"></label>
+  <label class="stack">Temperature<input id="ai-temperature" type="number" min="0" max="2" step="0.1" value="0.2"></label>
+  <label class="stack">Timeout（毫秒）<input id="ai-timeout" type="number" min="1000" max="120000" step="1000" value="30000"></label>
+  <div class="button-row"><button type="button" id="save-ai">保存 AI 设置</button><button type="button" id="test-ai">测试连接并授权域名</button></div>
+  <p id="ai-status" class="hint" role="status" aria-live="polite">尚未测试连接</p>
+</details>
+<details open><summary>我的商机</summary>
+  <label class="field">评论标记<select data-path="opportunity.badgeLevel"><option value="high">仅高意向</option><option value="medium">中高意向</option><option value="all">全部</option></select></label>
+  <input id="opp-search" type="search" placeholder="搜索用户／关键词／需求／产品">
+  <div class="button-row"><select id="opp-filter"><option value="all">全部商机</option><option value="high">高意向</option><option value="medium">中意向</option><option value="low">低意向</option><option value="tool_request">工具需求</option><option value="api_request">API 需求</option><option value="purchase_intent">购买需求</option><option value="service_request">服务需求</option></select><select id="opp-sort"><option value="priority">优先级</option><option value="recent">最新发现</option><option value="followers">粉丝数</option><option value="strength">商机强度</option><option value="fit">产品匹配度</option></select></div>
+  <ul id="opp-list"></ul><div id="opp-detail"></div>
+</details>
+<p id="diagnostic" role="status">正在检查当前标签页…</p><p id="error" role="alert"></p>
+</main><footer>只观察 X 页面已加载的数据。AI 分析仅在你点击扫描后开始；评论和产品资料会发往你配置的 AI 服务。</footer>
 <script src="popup.bundle.js"></script></body></html>

@@ -51,7 +51,7 @@ require('../content/index.js');
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '2.0.0';
+module.exports = '3.0.0';
 
 },
 "content/index": function(require, module, exports) {
@@ -67,9 +67,8 @@ const store = require('../shared/store.js');
 const transport = require('../shared/transport.js');
 const handle = require('../shared/handle.js');
 const favorites = require('../shared/favorites.js');
-const rules = require('../shared/rules.js');
 const dom = require('./dom.js');
-const renderer = require('./renderer.js');
+const createOpportunityUI = require('./opportunity-ui.js');
 const createTooltip = require('./tooltip.js');
 const createBadge = require('./badge.js');
 const createLayout = require('./layout.js');
@@ -94,7 +93,6 @@ const state = {
   hud: null
 };
 
-const postPlaced = new Map();
 const favoriteKeys = new Set();
 const favorite = chrome.runtime?.sendMessage ? {
   keyOf: favorites.keyOf,
@@ -116,6 +114,7 @@ const tooltip = createTooltip({ state, presentation, analytics, favorite, el: do
 const badge = createBadge({ state, presentation, tooltip, el: dom.el });
 const layout = createLayout({ state, handle, store, badge, tooltip, el: dom.el });
 const diagnostics = createDiagnostics({ state, version, el: dom.el });
+const opportunityUI = createOpportunityUI({ state, el: dom.el });
 
 function schedule() {
   if (state.initialized && !state.timer) state.timer = setTimeout(render, 120);
@@ -136,8 +135,8 @@ function render() {
     } else {
       document.querySelectorAll('article[data-testid="tweet"] [data-testid="User-Name"]').forEach(un => layout.reconcile(un, un, false));
       document.querySelectorAll('[data-testid="UserCell"]').forEach(cell => layout.reconcile(cell, layout.cellAnchor(cell), true));
-      reconcilePosts();
     }
+    opportunityUI.render();
     diagnostics.updateHud();
   } catch (error) {
     state.stats.lastError = '页面渲染：' + String(error.message || error).slice(0, 160);
@@ -146,52 +145,7 @@ function render() {
   }
 }
 
-function applyPostDecision(article, post) {
-  const postCfg = state.settings.post || {};
-  if (postCfg.highlightHighEngagement) {
-    const hl = rules.evaluateHighlight(post, { type: 'engagement', threshold: postCfg.rateThreshold, minViews: postCfg.minViews, enabled: true });
-    if (hl.triggered) renderer.applyHighlight(article);
-    else renderer.clearHighlight(article);
-  } else renderer.clearHighlight(article);
-
-  const filters = state.settings.filters || {};
-  if (filters.enabled) {
-    const decision = rules.evaluateFilter(post, state.settings);
-    if (decision.action === 'collapse') renderer.applyCollapse(article, dom.el);
-    else renderer.clearCollapse(article);
-  } else renderer.clearCollapse(article);
-}
-
-function reconcilePosts() {
-  const articles = document.querySelectorAll('article[data-testid="tweet"]');
-  const seen = new Set();
-  for (const article of articles) {
-    seen.add(article);
-    const id = renderer.getPostIdFromDOM(article);
-    const post = id ? state.posts.get(id) : null;
-    const old = postPlaced.get(article);
-    if (!post) {
-      if (old) { old.badge.remove(); postPlaced.delete(article); }
-      renderer.clearHighlight(article);
-      renderer.clearCollapse(article);
-      continue;
-    }
-    if (old && old.id === post.id && old.badge.isConnected) {
-      old.badge.textContent = renderer.postBadgeText(post, state.settings);
-    } else {
-      if (old) old.badge.remove();
-      const badge = renderer.renderPostBadge(article, post, state.settings, dom.el);
-      if (badge) postPlaced.set(article, { badge, id: post.id });
-    }
-    applyPostDecision(article, post);
-  }
-  for (const [article, rec] of postPlaced) {
-    if (!seen.has(article) || !article.isConnected) { rec.badge.remove(); postPlaced.delete(article); }
-  }
-}
-
 function consume(data) {
-  if (!state.settings.enabled) return;
   state.stats.packets++;
   state.stats.lastPacket = Date.now();
   state.stats.bridgeVersion = String(data.version || 'unknown').slice(0, 24);
@@ -223,6 +177,7 @@ const observer = createObserver({ state, owned: dom.owned, schedule });
 window.addEventListener('message', handleMessage);
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && (changes.xp_v3_product || changes.xp_v3_ai)) opportunityUI.reload();
   if (area === 'local' && changes[KEY]) {
     state.settings = config.config(changes[KEY].newValue);
     if (!state.settings.enabled) state.pending.length = 0;
@@ -267,77 +222,45 @@ window.addEventListener('resize', () => {
 },
 "shared/config": function(require, module, exports) {
 'use strict';
-// V2 settings: legacy flat fields + nested groups, with type validation,
-// clamping, keyword normalization, and old->new field migration.
+// Keep legacy badge settings and the account detail/favorite switches.
 
 const legacy = require('./settings.js');
 
 const DEFAULTS = {
-  schemaVersion: 2,
-  account: { showFollowers: true, showRatio: true, showAge: true, showTier: true },
-  post: { enabled: true, showEngagementRate: true, highlightHighEngagement: false, rateThreshold: 2, minViews: 1000 },
-  filters: { enabled: false, mode: 'highlight', includeKeywords: [], excludeKeywords: [] },
-  favorites: { enabled: true }
+  schemaVersion: 3,
+  account: { showRatio: true, showAge: true, showTier: true },
+  favorites: { enabled: true },
+  opportunity: { badgeLevel: 'high' }
 };
 
-const MAX_KEYWORDS = 200;
-const MAX_KEYWORD_LENGTH = 60;
-
 function bool(value, fallback) { return typeof value === 'boolean' ? value : fallback; }
-function number(value, fallback, min, max) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
-}
 function oneOf(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
-function keywords(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const k = item.trim().slice(0, MAX_KEYWORD_LENGTH);
-    if (k && !out.includes(k)) out.push(k);
-    if (out.length >= MAX_KEYWORDS) break;
-  }
-  return out;
-}
 
 function config(input = {}) {
   const flat = legacy.settings(input); // legacy flat fields keep working unchanged
 
   const account = { ...DEFAULTS.account };
-  const post = { ...DEFAULTS.post };
-  const filters = { ...DEFAULTS.filters };
   const favorites = { ...DEFAULTS.favorites };
+  const opportunity = { ...DEFAULTS.opportunity };
 
   if (input && typeof input === 'object') {
     if (input.account && typeof input.account === 'object') {
-      account.showFollowers = bool(input.account.showFollowers, account.showFollowers);
       account.showRatio = bool(input.account.showRatio, account.showRatio);
       account.showAge = bool(input.account.showAge, account.showAge);
       account.showTier = bool(input.account.showTier, account.showTier);
     }
-    if (input.post && typeof input.post === 'object') {
-      post.enabled = bool(input.post.enabled, post.enabled);
-      post.showEngagementRate = bool(input.post.showEngagementRate, post.showEngagementRate);
-      post.highlightHighEngagement = bool(input.post.highlightHighEngagement, post.highlightHighEngagement);
-      post.rateThreshold = number(input.post.rateThreshold, post.rateThreshold, 0, 1000);
-      post.minViews = number(input.post.minViews, post.minViews, 0, Number.MAX_SAFE_INTEGER);
-    }
-    if (input.filters && typeof input.filters === 'object') {
-      filters.enabled = bool(input.filters.enabled, filters.enabled);
-      filters.mode = oneOf(input.filters.mode, ['highlight', 'collapse'], filters.mode);
-      filters.includeKeywords = keywords(input.filters.includeKeywords);
-      filters.excludeKeywords = keywords(input.filters.excludeKeywords);
-    }
     if (input.favorites && typeof input.favorites === 'object') {
       favorites.enabled = bool(input.favorites.enabled, favorites.enabled);
     }
+    if (input.opportunity && typeof input.opportunity === 'object') {
+      opportunity.badgeLevel = oneOf(input.opportunity.badgeLevel, ['all', 'medium', 'high'], opportunity.badgeLevel);
+    }
   }
 
-  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, post, filters, favorites };
+  return { ...flat, schemaVersion: DEFAULTS.schemaVersion, account, favorites, opportunity };
 }
 
-module.exports = { defaults: DEFAULTS, config, bool, number, oneOf, keywords };
+module.exports = { defaults: DEFAULTS, config, bool, oneOf };
 
 },
 "shared/settings": function(require, module, exports) {
@@ -369,17 +292,7 @@ module.exports = { defaults, settings };
 },
 "shared/analytics": function(require, module, exports) {
 'use strict';
-// Pure metric calculations: engagement rate, follower ratio, account age.
-
-function calculateEngagement(metrics) {
-  if (!metrics || typeof metrics !== 'object') return null;
-  const keys = ['likes', 'replies', 'reposts', 'quotes', 'views'];
-  if (!keys.every(k => Number.isSafeInteger(metrics[k]) && metrics[k] >= 0)) return null;
-  if (metrics.views === 0) return null;
-  const total = metrics.likes + metrics.replies + metrics.reposts + metrics.quotes;
-  if (!Number.isSafeInteger(total)) return null;
-  return total / metrics.views * 100;
-}
+// Account detail calculations.
 
 function getFollowerRatio(user) {
   if (!user || !Number.isSafeInteger(user.followers) || user.followers < 0) return null;
@@ -400,7 +313,7 @@ function getAccountAge(user, now = Date.now()) {
   return { years, months, totalMonths: years * 12 + months };
 }
 
-module.exports = { calculateEngagement, getFollowerRatio, getAccountAge };
+module.exports = { getFollowerRatio, getAccountAge };
 
 },
 "shared/presentation": function(require, module, exports) {
@@ -568,6 +481,7 @@ function receive(cache, message, now = Date.now()) {
   // Do not drop all observations because a page-world clock was modified.
   const at = Number.isFinite(requestAt) && requestAt <= now + 5000 && requestAt >= now - 3600000 ? requestAt : now;
   const accepted = accept(cache, users, at, now);
+  for (const post of posts) post.observedAt = at;
   return { parsed: users.length, accepted, posts };
 }
 
@@ -580,11 +494,6 @@ module.exports = { receive };
 // Pure, no DOM; the DOM-to-post-id association lives in the content layer.
 
 const core = require('./core.js');
-
-function metric(value) {
-  if (typeof value === 'string' && /^\d{1,16}$/.test(value)) value = Number(value);
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
 
 function authorOf(raw) {
   const result = raw.core?.user_results?.result;
@@ -600,25 +509,26 @@ function normalizePost(raw) {
   if (!id) return null;
   const legacy = raw.legacy || {};
   const { authorId, authorHandle } = authorOf(raw);
+  const author = raw.core?.user_results?.result;
+  const inReplyToId = String(legacy.in_reply_to_status_id_str || raw.in_reply_to_status_id_str || raw.referenced_tweets?.find?.(x => x.type === 'replied_to')?.id || '').slice(0, 40);
+  const conversationId = String(legacy.conversation_id_str || raw.conversation_id_str || raw.conversation_id || '').slice(0, 40);
   return {
     id,
     authorId,
     authorHandle,
-    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000),
-    metrics: {
-      likes: metric(legacy.favorite_count),
-      replies: metric(legacy.reply_count),
-      reposts: metric(legacy.retweet_count),
-      quotes: metric(legacy.quote_count),
-      views: metric(raw.views?.count ?? legacy.view_count)
-    }
+    authorName: String(author?.core?.name || author?.legacy?.name || authorHandle).slice(0, 100),
+    inReplyToId,
+    conversationId,
+    isReply: !!inReplyToId,
+    isQuote: !!(legacy.is_quote_status || raw.quoted_status_result || legacy.quoted_status),
+    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000)
   };
 }
 
 function isTweetNode(node) {
   if (node.__typename === 'Tweet') return true;
   const legacy = node.legacy;
-  return !!legacy && (typeof legacy.full_text === 'string' || 'favorite_count' in legacy);
+  return !!legacy && (typeof legacy.full_text === 'string' || typeof legacy.text === 'string');
 }
 
 function extractPosts(json) {
@@ -637,7 +547,7 @@ function extractPosts(json) {
   return [...found.values()].slice(0, 500);
 }
 
-module.exports = { extractPosts, normalizePost, metric };
+module.exports = { extractPosts, normalizePost };
 
 },
 "shared/handle": function(require, module, exports) {
@@ -778,54 +688,6 @@ const client = {
 module.exports = { STORAGE_KEY, keyOf, listFavorites, getFavorite, saveFavorite, updateFavorite, deleteFavorite, isFavorited, searchFavorites, sortFavorites, client };
 
 },
-"shared/rules": function(require, module, exports) {
-'use strict';
-// Keyword / highlight rules: pure decision functions, no DOM, no storage.
-
-const analytics = require('./analytics.js');
-
-const MAX_KEYWORD_LENGTH = 60;
-
-function normalizeKeyword(keyword) {
-  if (typeof keyword !== 'string') return '';
-  return keyword.trim().slice(0, MAX_KEYWORD_LENGTH);
-}
-
-function matchKeywords(text, keywords) {
-  if (!Array.isArray(keywords) || keywords.length === 0) return [];
-  const lower = String(text || '').toLowerCase();
-  const matched = [];
-  for (const kw of keywords) {
-    const k = normalizeKeyword(kw);
-    if (k && lower.includes(k.toLowerCase())) matched.push(k);
-  }
-  return matched;
-}
-
-// Priority: exclude (collapse) > include (highlight) > show.
-function evaluateFilter(post, settings) {
-  const filters = (settings && settings.filters) || {};
-  const text = post && post.text;
-  const exclude = matchKeywords(text, filters.excludeKeywords);
-  if (exclude.length) return { action: 'collapse', matched: exclude };
-  const include = matchKeywords(text, filters.includeKeywords);
-  if (include.length) return { action: 'highlight', matched: include };
-  return { action: 'show', matched: [] };
-}
-
-function evaluateHighlight(post, rules) {
-  if (!rules || rules.enabled !== true) return { triggered: false, reason: 'disabled' };
-  const metrics = post && post.metrics;
-  const engagement = analytics.calculateEngagement(metrics);
-  if (engagement === null) return { triggered: false, reason: 'unknown' };
-  if (!Number.isSafeInteger(metrics.views) || metrics.views < rules.minViews) return { triggered: false, reason: 'below-min-views' };
-  if (engagement < rules.threshold) return { triggered: false, reason: 'below-threshold' };
-  return { triggered: true, reason: 'engagement', engagement, views: metrics.views };
-}
-
-module.exports = { normalizeKeyword, matchKeywords, evaluateFilter, evaluateHighlight };
-
-},
 "content/dom": function(require, module, exports) {
 'use strict';
 // Small DOM helpers shared by the content-script modules.
@@ -850,76 +712,312 @@ function theme() {
 
 function owned(node) {
   const n = node.nodeType === 1 ? node : node.parentElement;
-  return !!n?.closest?.('.xp-badge,.xp-badge-line,.xp-post-badge,#xp-inline-tip,#xp-inline-hud');
+  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud,.xp-opp-panel,.xp-opp-marker,.xp-opp-modal');
 }
 
 module.exports = { el, theme, owned };
 
 },
-"content/renderer": function(require, module, exports) {
+"content/opportunity-ui": function(require, module, exports) {
 'use strict';
-// Post badge / highlight / filter rendering.
-// DOM attachment uses well-known X patterns with graceful fallback: when a post id
-// cannot be resolved from an article, no badge is inserted (never show wrong data).
 
-const analytics = require('../shared/analytics.js');
+const opportunity = require('../shared/opportunity.js');
 
-function getPostIdFromDOM(article) {
-  if (!article || typeof article.querySelectorAll !== 'function') return '';
-  for (const a of article.querySelectorAll('a[href]')) {
-    const m = String(a.getAttribute('href') || '').match(/\/status\/(\d+)/);
-    if (m) return m[1].slice(0, 40);
+function rpc(action, payload = {}) {
+  return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    if (!response?.ok) return reject(new Error(response?.error || '商机操作失败'));
+    resolve(response.result);
+  }));
+}
+
+function postIdFromArticle(article) {
+  const time = article.querySelector?.('time');
+  const dated = time?.closest?.('a[href]');
+  const links = dated ? [dated] : article.querySelectorAll?.('a[href]') || [];
+  for (const link of links) {
+    const match = String(link.getAttribute('href') || '').match(/\/status\/(\d{1,40})(?:[/?#]|$)/);
+    if (match) return match[1];
   }
   return '';
 }
 
-function fmt(n) { return n === null ? '—' : n.toLocaleString('en-US'); }
+function pagePostId() {
+  return String(location.pathname || '').match(/^\/[A-Za-z0-9_]{1,15}\/status\/(\d{1,40})(?:\/|$)/)?.[1] || '';
+}
 
-function postBadgeText(post, settings) {
-  const postCfg = (settings && settings.post) || {};
-  const m = (post && post.metrics) || {};
-  let text = '赞 ' + fmt(m.likes) + ' · 转 ' + fmt(m.reposts) + ' · 评 ' + fmt(m.replies) + ' · 看 ' + fmt(m.views);
-  if (postCfg.showEngagementRate !== false) {
-    const rate = analytics.calculateEngagement(m);
-    if (rate !== null) text += ' · 互动 ' + rate.toFixed(2) + '%';
+function createOpportunityUI({ state, el }) {
+  const shown = new Map();
+  let currentPostId = '', rootArticle = null, panel = null, modal = null;
+  let records = new Map(), scanBusy = false, attempted = new Set(), scanSignature = '', progress = null, error = '';
+  let listOpen = false, generation = 0;
+  let activeProductSnapshot = '', activeModel = '', activeEndpoint = '';
+
+  function recordsForPost() { return [...records.values()].filter(r => r.postId === currentPostId && r.productSnapshot === activeProductSnapshot && r.model === activeModel && r.aiEndpoint === activeEndpoint); }
+  function band(score) { return score >= 80 ? 'high' : score >= 60 ? 'medium' : 'low'; }
+  function visible(r) {
+    const setting = state.settings.opportunity?.badgeLevel || 'high';
+    return setting === 'all' || (setting === 'medium' && r.opportunityScore >= 60) || r.opportunityScore >= 80;
   }
-  return text;
+  function clearMarkers() { for (const marker of shown.values()) marker.remove(); shown.clear(); }
+  function closeModal() { modal?.remove(); modal = null; }
+  function makeButton(label, click) { const b = el('button', 'xp-opp-button', label); b.type = 'button'; b.addEventListener('click', click); return b; }
+
+  async function changeRecord(rec, patch) {
+    try { const next = await rpc('update', { id: rec.id, patch }); records.set(next.id, next); drawPanel(); if (modal) showDetail(next); }
+    catch (e) { error = e.message; drawPanel(); }
+  }
+
+  function showDetail(rec) {
+    closeModal();
+    const wrap = el('div', 'xp-opp-modal');
+    const card = el('section', 'xp-opp-card');
+    const heading = el('h2', '', (rec.authorName || rec.authorHandle || '用户') + ' @' + (rec.authorHandle || 'unknown'));
+    card.append(heading, el('p', '', '粉丝 ' + (rec.authorFollowers ?? '未知') + ' · 关注 ' + (rec.authorFollowing ?? '未知')));
+    const rows = [
+      ['原帖', rec.parentPostText], ['评论', rec.commentText], ['需求类型', rec.opportunityType],
+      ['需求', rec.need], ['痛点', rec.painPoint], ['商机强度', rec.opportunityScore],
+      ['产品匹配度', rec.productFitScore], ['优先级', rec.priorityScore],
+      ['判断依据', rec.evidence], ['匹配理由', rec.fitReason], ['预算信号', rec.budgetSignal],
+      ['发现时间', new Date(rec.createdAt).toLocaleString('zh-CN')]
+    ];
+    for (const [label, value] of rows) {
+      const row = el('p', 'xp-opp-detail-row');
+      row.append(el('strong', '', label + '：'), el('span', '', String(value ?? '未知')));
+      card.append(row);
+    }
+    const actions = el('div', 'xp-opp-actions');
+    actions.append(
+      makeButton(rec.favorite ? '取消收藏' : '收藏商机', () => changeRecord(rec, { favorite: !rec.favorite })),
+      makeButton('打开评论', () => window.open(rec.commentUrl, '_blank', 'noopener')),
+      makeButton('打开用户', () => rec.authorHandle && window.open('https://x.com/' + rec.authorHandle, '_blank', 'noopener')),
+      makeButton('关闭', closeModal)
+    );
+    card.append(actions); wrap.append(card); document.documentElement.append(wrap); modal = wrap;
+    wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
+  }
+
+  function drawPanel() {
+    if (!panel || !rootArticle) return;
+    panel.replaceChildren();
+    const top = el('div', 'xp-opp-head');
+    top.append(el('strong', '', '商机雷达'));
+    const scanLabel = scanBusy ? '正在分析…' : attempted.size ? '分析下一批' : '扫描评论商机';
+    const scanButton = makeButton(scanLabel, scan);
+    scanButton.disabled = scanBusy;
+    top.append(scanButton);
+    panel.append(top);
+    const list = recordsForPost();
+    const high = list.filter(r => r.opportunityScore >= 80).length;
+    const medium = list.filter(r => r.opportunityScore >= 60 && r.opportunityScore < 80).length;
+    const low = list.filter(r => r.opportunityScore < 60).length;
+    const comments = opportunity.commentsForThread([...state.posts.values()], currentPostId);
+    panel.append(el('p', 'xp-opp-stats', '已加载评论 ' + comments.length + ' · 发现商机 ' + list.length + '（高 ' + high + ' / 中 ' + medium + ' / 低 ' + low + '）'));
+    if (progress) panel.append(el('p', 'xp-opp-stats', '规则初筛 ' + progress.filtered + ' · 已分析 ' + progress.analyzed + ' · 本次 AI 调用 ' + progress.aiCount));
+    if (error) panel.append(el('p', 'xp-opp-error', error));
+    if (list.length) {
+      panel.append(makeButton(listOpen ? '收起商机' : '查看全部商机', () => { listOpen = !listOpen; drawPanel(); }));
+      if (listOpen) {
+        const box = el('div', 'xp-opp-list');
+        for (const rec of list.sort((a, b) => b.priorityScore - a.priorityScore)) {
+          box.append(makeButton('@' + (rec.authorHandle || 'unknown') + ' · 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => showDetail(rec)));
+        }
+        panel.append(box);
+      }
+    }
+  }
+
+  async function load(postId) {
+    const targetGeneration = ++generation;
+    try {
+      const [found, config] = await Promise.all([rpc('list', { postId }), rpc('config')]);
+      if (targetGeneration !== generation) return;
+      activeProductSnapshot = JSON.stringify(config.product);
+      activeModel = config.ai?.model || '';
+      activeEndpoint = config.ai?.baseUrl || '';
+      for (const rec of found) if (!records.has(rec.id)) records.set(rec.id, rec);
+      drawPanel(); render();
+    } catch (e) { if (targetGeneration === generation) { error = e.message; drawPanel(); } }
+  }
+
+  async function scan() {
+    if (scanBusy || !currentPostId) return;
+    scanBusy = true; error = ''; drawPanel();
+    const scanPostId = currentPostId;
+    try {
+      await rpc('ready');
+      const config = await rpc('config');
+      activeProductSnapshot = JSON.stringify(config.product);
+      activeModel = config.ai?.model || '';
+      activeEndpoint = config.ai?.baseUrl || '';
+      const nextSignature = JSON.stringify([config.product, config.ai?.baseUrl, config.ai?.model]);
+      if (nextSignature !== scanSignature) { scanSignature = nextSignature; attempted = new Set(); }
+      const posts = [...state.posts.values()];
+      const root = state.posts.get(currentPostId);
+      if (!root?.text) throw new Error('尚未捕获原帖内容，请刷新帖子并等待加载');
+      const comments = opportunity.commentsForThread(posts, currentPostId);
+      const eligible = comments.filter(p => opportunity.ruleMatch(p.text, config.product));
+      const candidateKey = p => JSON.stringify([p.id, p.text, root.text, state.posts.get(p.inReplyToId)?.text || '']);
+      const selected = eligible.filter(p => !attempted.has(candidateKey(p))).slice(0, 100);
+      if (!selected.length) { error = eligible.length ? '当前已加载的候选评论均已分析' : '当前已加载评论中没有命中需求规则'; return; }
+      progress = { filtered: eligible.length, analyzed: 0, aiCount: 0 };
+      for (let offset = 0; offset < selected.length; offset += 10) {
+        const batch = selected.slice(offset, offset + 10).map(p => {
+          const user = state.cache.get(p.authorHandle) || {};
+          return {
+            comment_id: p.id, post_id: currentPostId, comment: p.text, parent_post: root.text,
+            reply_parent: state.posts.get(p.inReplyToId)?.text || '',
+            author: { id: p.authorId, handle: p.authorHandle, name: p.authorName,
+              followers: user.followers ?? null, following: user.following ?? null }
+          };
+        });
+        const response = await rpc('analyze', { items: batch });
+        if (scanPostId !== currentPostId) return;
+        for (const result of response.results) {
+          for (const [id, rec] of records) if (rec.commentId === result.commentId && rec.productSnapshot === activeProductSnapshot && rec.model === activeModel && rec.aiEndpoint === activeEndpoint) records.delete(id);
+          if (result.opportunity) records.set(result.opportunity.id, result.opportunity);
+        }
+        for (const p of selected.slice(offset, offset + 10)) attempted.add(candidateKey(p));
+        progress.analyzed += batch.length;
+        progress.aiCount += response.aiCount;
+        drawPanel(); render();
+      }
+    } catch (e) { error = e.message; }
+    finally { scanBusy = false; drawPanel(); render(); }
+  }
+
+  function render() {
+    const id = pagePostId();
+    if (id !== currentPostId) {
+      currentPostId = id; rootArticle = null; panel?.remove(); panel = null;
+      clearMarkers(); closeModal(); records = new Map(); attempted = new Set(); scanSignature = ''; progress = null; error = ''; listOpen = false; activeProductSnapshot = ''; activeModel = ''; activeEndpoint = '';
+      if (id) load(id);
+    }
+    if (!id) { clearMarkers(); panel?.remove(); panel = null; return; }
+    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    const byArticle = new Map();
+    for (const article of articles) byArticle.set(article, postIdFromArticle(article));
+    const root = [...byArticle].find(([, postId]) => postId === id)?.[0] || null;
+    if (root !== rootArticle || (panel && !panel.isConnected)) {
+      panel?.remove(); rootArticle = root; panel = null;
+      if (root) { panel = el('section', 'xp-opp-panel'); root.append(panel); drawPanel(); }
+    }
+    const byComment = new Map(recordsForPost().map(r => [r.commentId, r]));
+    for (const [article, marker] of shown) {
+      if (!article.isConnected || !byComment.has(byArticle.get(article)) || !visible(byComment.get(byArticle.get(article)))) { marker.remove(); shown.delete(article); }
+    }
+    for (const [article, postId] of byArticle) {
+      const rec = byComment.get(postId);
+      if (!rec || !visible(rec)) continue;
+      const prior = shown.get(article);
+      if (prior?.dataset.xpCommentId === postId && prior.isConnected) continue;
+      prior?.remove();
+      const marker = makeButton('🔥 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => showDetail(rec));
+      marker.className = 'xp-opp-marker xp-opp-' + band(rec.opportunityScore);
+      marker.dataset.xpCommentId = postId;
+      article.append(marker); shown.set(article, marker);
+    }
+  }
+
+  return { render, postIdFromArticle, scan, reload: () => currentPostId && load(currentPostId) };
 }
 
-function renderPostBadge(article, post, settings, el) {
-  if ((settings && settings.post && settings.post.enabled) === false) return null;
-  const badge = el('span', 'xp-post-badge', postBadgeText(post, settings));
-  badge.dataset.xpPostId = post.id;
-  article.append(badge);
-  return badge;
+module.exports = createOpportunityUI;
+
+},
+"shared/opportunity": function(require, module, exports) {
+'use strict';
+// Pure rules, reply selection, AI result validation, and deterministic scoring.
+
+const TYPES = new Set(['tool_request', 'solution_request', 'api_request', 'purchase_intent', 'service_request', 'pain_point', 'outsourcing', 'collaboration', 'recommendation', 'other', 'not_opportunity']);
+const NEED = /有没有|求推荐|推荐一下|什么工具|有什么工具|找一个|寻找|求一个|哪里有|谁能|有没有人做|需要|求助|怎么解决|looking for|recommend|need a|any tool|how can i/i;
+const TOOL = /工具|软件|平台|saas|api|插件|系统|自动化|ai|app|service|integration/i;
+const PAIN = /太麻烦|效率低|人工|耗时|不会|做不出来|成本高|太贵|一直失败|很难|痛点|费时|slow|expensive|struggling|difficult/i;
+const COMMERCIAL = /多少钱|价格|购买|付费|收费|报价|预算|采购|合作|外包|付钱|pay|buy|price|budget|hire/i;
+const TRIVIAL = /^(?:哈+|确实|赞|支持|第一|6+|牛|牛逼|👍+|😂+|🤣+|🔥+)$/i;
+
+function ruleMatch(text, product = {}) {
+  const value = String(text || '').trim();
+  if (!value || value.length < 2 || TRIVIAL.test(value) || !/[\p{L}\p{N}]/u.test(value)) return false;
+  if (/加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i.test(value)) return false;
+  const excluded = Array.isArray(product.excludeKeywords) ? product.excludeKeywords : [];
+  if (excluded.some(k => k && value.toLowerCase().includes(String(k).toLowerCase()))) return false;
+  return NEED.test(value) || PAIN.test(value) || COMMERCIAL.test(value) || (TOOL.test(value) && /求|找|需要|推荐|有没有|can|need|looking/i.test(value));
 }
 
-function hasClass(node, cls) { return (' ' + (node.className || '') + ' ').includes(' ' + cls + ' '); }
-function addClass(node, cls) { if (!hasClass(node, cls)) node.className = ((node.className || '') + ' ' + cls).trim(); }
-function removeClass(node, cls) { node.className = (' ' + (node.className || '') + ' ').replace(' ' + cls + ' ', ' ').trim(); }
-
-function applyHighlight(article) { addClass(article, 'xp-highlight'); }
-function clearHighlight(article) { removeClass(article, 'xp-highlight'); }
-
-const collapseButtons = new WeakMap();
-
-function applyCollapse(article, el) {
-  addClass(article, 'xp-collapsed');
-  if (collapseButtons.has(article)) return;
-  const btn = el('button', 'xp-collapse-btn', '已折叠 · 展开');
-  btn.type = 'button';
-  btn.addEventListener('click', () => clearCollapse(article));
-  article.append(btn);
-  collapseButtons.set(article, btn);
+function belongsToThread(post, rootId, byId) {
+  if (!post?.isReply || post.isQuote || post.id === rootId) return false;
+  if (post.conversationId === rootId) return true;
+  const visited = new Set([post.id]);
+  let parentId = post.inReplyToId;
+  for (let depth = 0; parentId && depth < 30; depth++) {
+    if (parentId === rootId) return true;
+    if (visited.has(parentId)) return false;
+    visited.add(parentId);
+    parentId = byId.get(parentId)?.inReplyToId;
+  }
+  return false;
 }
 
-function clearCollapse(article) {
-  removeClass(article, 'xp-collapsed');
-  const btn = collapseButtons.get(article);
-  if (btn) { btn.remove(); collapseButtons.delete(article); }
+function commentsForThread(posts, rootId) {
+  const byId = new Map(posts.map(p => [p.id, p]));
+  return posts.filter(p => belongsToThread(p, rootId, byId)).sort((a, b) => (a.observedAt || 0) - (b.observedAt || 0));
 }
 
-module.exports = { getPostIdFromDOM, postBadgeText, renderPostBadge, applyHighlight, clearHighlight, applyCollapse, clearCollapse };
+function validProduct(p) {
+  return !!(p && p.enabled && ['name', 'description', 'problem', 'targetUsers', 'capabilities'].every(k => typeof p[k] === 'string' && p[k].trim()));
+}
+
+function signature(comment, product, model, endpoint) {
+  return JSON.stringify([comment.id, comment.text, comment.parentPost || '', comment.replyParent || '', product, model, endpoint]);
+}
+
+function parseAI(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { return JSON.parse(cleaned); } catch { throw new Error('AI 返回的不是有效 JSON'); }
+}
+
+function score(result) {
+  const urgency = { high: 100, medium: 50, low: 0, unknown: 0 }[result.urgency];
+  const opportunityScore = Math.round(result.intent_score * .4 + result.pain_score * .25 + result.commercial_score * .2 + urgency * .15);
+  const priorityScore = Math.round((opportunityScore * .6 + result.product_fit_score * .4) * 10) / 10;
+  return { opportunityScore, priorityScore };
+}
+
+function validateResult(raw, requested) {
+  if (!raw || typeof raw !== 'object' || typeof raw.comment_id !== 'string' || !requested.has(raw.comment_id)) throw new Error('AI 结果缺少对应评论 ID');
+  if (typeof raw.is_opportunity !== 'boolean' || !TYPES.has(raw.opportunity_type)) throw new Error('AI 商机类型无效');
+  for (const field of ['intent_score', 'pain_score', 'commercial_score', 'product_fit_score']) {
+    if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
+  }
+  if (!['high', 'medium', 'low', 'unknown'].includes(raw.urgency)) throw new Error('AI 紧迫度无效');
+  if (!Number.isFinite(raw.confidence) || raw.confidence < 0 || raw.confidence > 1) throw new Error('AI 置信度无效');
+  for (const field of ['need', 'pain_point', 'budget_signal', 'fit_reason', 'evidence']) {
+    if (typeof raw[field] !== 'string' || raw[field].length > 1000) throw new Error('AI 字段无效：' + field);
+  }
+  const source = requested.get(raw.comment_id);
+  if (!raw.is_opportunity && raw.opportunity_type !== 'not_opportunity') throw new Error('AI 非商机类型矛盾');
+  if (raw.is_opportunity && (!raw.need.trim() || !raw.fit_reason.trim())) throw new Error('AI 商机缺少需求或匹配理由');
+  if (raw.is_opportunity && (!raw.evidence.trim() || ![source.comment, source.parent_post, source.reply_parent || ''].some(t => t.includes(raw.evidence)))) throw new Error('AI 判断依据不在原文中');
+  if (raw.is_opportunity && raw.opportunity_type === 'not_opportunity') throw new Error('AI 商机类型矛盾');
+  if (raw.budget_signal.toLowerCase() !== 'unknown' && !/预算|价格|多少钱|付费|购买|买|采购|报价|收费|pay|buy|budget|price|cost/i.test(source.comment)) throw new Error('评论没有明确预算或付费信号');
+  return { ...raw, ...score(raw) };
+}
+
+function validateBatch(parsed, items) {
+  if (!parsed || !Array.isArray(parsed.results)) throw new Error('AI 缺少 results 数组');
+  const requested = new Map(items.map(x => [x.comment_id, x]));
+  if (parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+  const seen = new Set();
+  return parsed.results.map(raw => {
+    const result = validateResult(raw, requested);
+    if (seen.has(result.comment_id)) throw new Error('AI 返回重复评论');
+    seen.add(result.comment_id);
+    return result;
+  });
+}
+
+module.exports = { ruleMatch, belongsToThread, commentsForThread, validProduct, signature, parseAI, score, validateResult, validateBatch, TYPES };
 
 },
 "content/tooltip": function(require, module, exports) {

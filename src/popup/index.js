@@ -6,6 +6,7 @@ const version = require('../version.js');
 const config = require('../shared/config.js');
 const favorites = require('../shared/favorites.js');
 const exporter = require('../shared/exporter.js');
+const attachAIConnection = require('./ai-connection.js');
 
 const KEY = 'xp_inline_settings';
 let cfg = config.config();
@@ -153,3 +154,136 @@ refreshFavorites();
 
 diagnostics();
 setInterval(diagnostics, 1500);
+
+function opportunityRpc(action, payload = {}) {
+  return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    if (!response?.ok) return reject(new Error(response?.error || '商机操作失败'));
+    resolve(response.result);
+  }));
+}
+const field = id => document.getElementById(id);
+function productInput() {
+  return {
+    enabled: field('product-enabled').checked, name: field('product-name').value,
+    description: field('product-description').value, problem: field('product-problem').value,
+    targetUsers: field('product-target').value, capabilities: field('product-capabilities').value,
+    keywords: field('product-keywords').value, excludeKeywords: field('product-exclusions').value,
+    budget: field('product-budget').value
+  };
+}
+function aiInput() {
+  return {
+    baseUrl: field('ai-base').value, apiKey: field('ai-key').value, model: field('ai-model').value,
+    temperature: Number(field('ai-temperature').value), timeout: Number(field('ai-timeout').value)
+  };
+}
+function paintProduct(product) {
+  if (!product) return;
+  field('product-enabled').checked = !!product.enabled;
+  for (const [id, value] of [
+    ['product-name', product.name], ['product-description', product.description], ['product-problem', product.problem],
+    ['product-target', product.targetUsers], ['product-capabilities', product.capabilities],
+    ['product-keywords', (product.keywords || []).join(', ')], ['product-exclusions', (product.excludeKeywords || []).join(', ')],
+    ['product-budget', product.budget]
+  ]) field(id).value = value || '';
+}
+function paintAI(ai) {
+  if (!ai) return;
+  field('ai-base').value = ai.baseUrl;
+  field('ai-model').value = ai.model;
+  field('ai-temperature').value = ai.temperature;
+  field('ai-timeout').value = ai.timeout;
+  field('ai-key').value = '';
+  field('ai-status').textContent = ai.verified ? '连接已测试，可以开始扫描' : ai.hasKey ? '已保存 Key，需测试连接' : '尚未设置 API Key';
+}
+
+opportunityRpc('config').then(({ product, ai }) => { paintProduct(product); paintAI(ai); }).catch(e => { error.textContent = e.message; });
+field('save-product').addEventListener('click', async () => {
+  try { paintProduct(await opportunityRpc('saveProduct', { product: productInput() })); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+});
+field('save-ai').addEventListener('click', async () => {
+  try { paintAI(await opportunityRpc('saveAI', { ai: aiInput() })); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+});
+attachAIConnection({
+  button: field('test-ai'), status: field('ai-status'), readInput: aiInput,
+  requestPermission: details => chrome.permissions.request(details),
+  rpc: opportunityRpc, paintAI, clearError: () => { error.textContent = ''; }
+});
+
+let opportunityList = [], selectedOpportunity = '';
+function filteredOpportunities() {
+  const q = field('opp-search').value.trim().toLowerCase();
+  const filter = field('opp-filter').value;
+  const order = field('opp-sort').value;
+  const items = opportunityList.filter(x => {
+    if (q && ![x.authorHandle, x.authorName, x.need, x.commentText, x.productName].join(' ').toLowerCase().includes(q)) return false;
+    if (filter === 'high' && x.opportunityScore < 80) return false;
+    if (filter === 'medium' && (x.opportunityScore < 60 || x.opportunityScore >= 80)) return false;
+    if (filter === 'low' && x.opportunityScore >= 60) return false;
+    if (!['all', 'high', 'medium', 'low'].includes(filter) && x.opportunityType !== filter) return false;
+    return true;
+  });
+  const get = {
+    priority: x => x.priorityScore, recent: x => x.createdAt, followers: x => x.authorFollowers || 0,
+    strength: x => x.opportunityScore, fit: x => x.productFitScore
+  }[order];
+  return items.sort((a, b) => get(b) - get(a));
+}
+function oppButton(label, fn) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); return b; }
+function renderOpportunityDetail() {
+  const box = field('opp-detail'); box.replaceChildren();
+  const rec = opportunityList.find(x => x.id === selectedOpportunity);
+  if (!rec) return;
+  const heading = document.createElement('strong'); heading.textContent = (rec.authorName || rec.authorHandle) + ' @' + rec.authorHandle; box.append(heading);
+  for (const [label, value] of [
+    ['粉丝', rec.authorFollowers ?? '未知'], ['关注', rec.authorFollowing ?? '未知'], ['原帖', rec.parentPostText],
+    ['评论', rec.commentText], ['类型', rec.opportunityType], ['需求', rec.need], ['痛点', rec.painPoint],
+    ['商机强度', rec.opportunityScore], ['产品匹配', rec.productFitScore], ['优先级', rec.priorityScore],
+    ['依据', rec.evidence], ['匹配理由', rec.fitReason], ['预算', rec.budgetSignal],
+    ['备注', rec.note || '无'], ['标签', (rec.tags || []).join('、') || '无'],
+    ['发现时间', new Date(rec.createdAt).toLocaleString('zh-CN')]
+  ]) {
+    const p = document.createElement('p');
+    const strong = document.createElement('strong'); strong.textContent = label + '：';
+    p.append(strong, document.createTextNode(String(value ?? ''))); box.append(p);
+  }
+  const actions = document.createElement('div'); actions.className = 'button-row';
+  actions.append(
+    oppButton(rec.favorite ? '取消收藏' : '收藏', () => editOpportunity(rec, { favorite: !rec.favorite })),
+    oppButton('备注', () => { const note = prompt('商机备注', rec.note || ''); if (note !== null) editOpportunity(rec, { note }); }),
+    oppButton('标签', () => { const tags = prompt('标签，逗号分隔', (rec.tags || []).join(', ')); if (tags !== null) editOpportunity(rec, { tags }); }),
+    oppButton('打开评论', () => chrome.tabs.create({ url: rec.commentUrl })),
+    oppButton('打开用户', () => rec.authorHandle && chrome.tabs.create({ url: 'https://x.com/' + rec.authorHandle })),
+    oppButton('删除', () => deleteOpportunity(rec))
+  ); box.append(actions);
+}
+function renderOpportunities() {
+  const list = field('opp-list'); list.replaceChildren();
+  const items = filteredOpportunities();
+  if (!items.length) { const empty = document.createElement('li'); empty.className = 'opp-empty'; empty.textContent = '暂无匹配商机'; list.append(empty); }
+  for (const rec of items) {
+    const li = document.createElement('li'); li.className = 'opp-item';
+    const b = oppButton('@' + (rec.authorHandle || 'unknown') + ' · 商机 ' + rec.opportunityScore + ' · 匹配 ' + rec.productFitScore, () => { selectedOpportunity = rec.id; renderOpportunityDetail(); });
+    const snippet = document.createElement('div'); snippet.className = 'opp-snippet'; snippet.textContent = rec.need || rec.commentText;
+    li.append(b, snippet); list.append(li);
+  }
+  renderOpportunityDetail();
+}
+async function refreshOpportunities() {
+  try { opportunityList = await opportunityRpc('list'); renderOpportunities(); }
+  catch (e) { error.textContent = e.message; }
+}
+async function editOpportunity(rec, patch) {
+  try { await opportunityRpc('update', { id: rec.id, patch }); await refreshOpportunities(); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+}
+async function deleteOpportunity(rec) {
+  if (!confirm('删除这条商机？再次手动扫描时可能重新发现。')) return;
+  try { await opportunityRpc('remove', { id: rec.id }); selectedOpportunity = ''; await refreshOpportunities(); error.textContent = ''; }
+  catch (e) { error.textContent = e.message; }
+}
+for (const id of ['opp-search', 'opp-filter', 'opp-sort']) field(id).addEventListener(id === 'opp-search' ? 'input' : 'change', renderOpportunities);
+refreshOpportunities();

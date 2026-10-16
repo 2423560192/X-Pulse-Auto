@@ -4,11 +4,6 @@
 
 const core = require('./core.js');
 
-function metric(value) {
-  if (typeof value === 'string' && /^\d{1,16}$/.test(value)) value = Number(value);
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
 function authorOf(raw) {
   const result = raw.core?.user_results?.result;
   return {
@@ -23,25 +18,26 @@ function normalizePost(raw) {
   if (!id) return null;
   const legacy = raw.legacy || {};
   const { authorId, authorHandle } = authorOf(raw);
+  const author = raw.core?.user_results?.result;
+  const inReplyToId = String(legacy.in_reply_to_status_id_str || raw.in_reply_to_status_id_str || raw.referenced_tweets?.find?.(x => x.type === 'replied_to')?.id || '').slice(0, 40);
+  const conversationId = String(legacy.conversation_id_str || raw.conversation_id_str || raw.conversation_id || '').slice(0, 40);
   return {
     id,
     authorId,
     authorHandle,
-    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000),
-    metrics: {
-      likes: metric(legacy.favorite_count),
-      replies: metric(legacy.reply_count),
-      reposts: metric(legacy.retweet_count),
-      quotes: metric(legacy.quote_count),
-      views: metric(raw.views?.count ?? legacy.view_count)
-    }
+    authorName: String(author?.core?.name || author?.legacy?.name || authorHandle).slice(0, 100),
+    inReplyToId,
+    conversationId,
+    isReply: !!inReplyToId,
+    isQuote: !!(legacy.is_quote_status || raw.quoted_status_result || legacy.quoted_status),
+    text: String(legacy.full_text || legacy.text || raw.full_text || raw.text || '').slice(0, 4000)
   };
 }
 
 function isTweetNode(node) {
   if (node.__typename === 'Tweet') return true;
   const legacy = node.legacy;
-  return !!legacy && (typeof legacy.full_text === 'string' || 'favorite_count' in legacy);
+  return !!legacy && (typeof legacy.full_text === 'string' || typeof legacy.text === 'string');
 }
 
 function extractPosts(json) {
@@ -60,4 +56,4 @@ function extractPosts(json) {
   return [...found.values()].slice(0, 500);
 }
 
-module.exports = { extractPosts, normalizePost, metric };
+module.exports = { extractPosts, normalizePost };

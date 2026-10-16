@@ -17,6 +17,7 @@ function receive(cache, message, now = Date.now()) {
   // Do not drop all observations because a page-world clock was modified.
   const at = Number.isFinite(requestAt) && requestAt <= now + 5000 && requestAt >= now - 3600000 ? requestAt : now;
   const accepted = accept(cache, users, at, now);
+  for (const post of posts) post.observedAt = at;
   return { parsed: users.length, accepted, posts };
 }
 

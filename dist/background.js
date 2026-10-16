@@ -8,6 +8,8 @@ const __modules = {
 // Serves as the single write entry so multiple tabs cannot race each other (D5).
 
 const favorites = require('./shared/favorites.js');
+const opportunities = require('./shared/opportunity-store.js');
+const aiClient = require('./shared/ai-client.js');
 
 chrome.runtime.onInstalled.addListener(() => {
   if (chrome.alarms?.clear) chrome.alarms.clear('x-pulse-poll').catch(() => {});
@@ -42,6 +44,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   p.then(result => sendResponse({ ok: true, result }))
     .catch(err => sendResponse({ ok: false, error: String((err && err.message) || err) }));
   return true; // keep the channel open for the async response
+});
+
+async function dispatchOpportunity(action, payload) {
+  switch (action) {
+    case 'config': return opportunities.getConfig();
+    case 'saveProduct': return opportunities.saveProduct(payload.product);
+    case 'saveAI': return opportunities.saveAI(payload.ai);
+    case 'ready': { await opportunities.ready(); return true; }
+    case 'testAI': {
+      const ai = (await chrome.storage.local.get(opportunities.KEYS.ai))[opportunities.KEYS.ai];
+      if (!ai?.apiKey) throw new Error('请先保存 AI 设置');
+      const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
+      if (!granted) throw new Error('未获得 AI 服务域名权限');
+      await aiClient.testConnection(ai);
+      await opportunities.markVerified();
+      return true;
+    }
+    case 'list': return opportunities.list(payload.postId);
+    case 'update': return opportunities.update(payload.id, payload.patch || {});
+    case 'remove': return opportunities.remove(payload.id);
+    case 'analyze': {
+      const { ai } = await opportunities.ready();
+      const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
+      if (!granted) throw new Error('AI 服务域名权限已失效，请重新测试连接');
+      return opportunities.analyzeBatch(payload.items);
+    }
+    default: throw new Error('未知商机操作');
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.type !== 'xp-opportunity') return undefined;
+  const task = () => dispatchOpportunity(message.action, message.payload || {});
+  const p = ['saveProduct', 'saveAI', 'testAI', 'update', 'remove', 'analyze'].includes(message.action) ? enqueue(task) : task();
+  p.then(result => sendResponse({ ok: true, result }))
+    .catch(err => sendResponse({ ok: false, error: String((err && err.message) || err) }));
+  return true;
 });
 
 },
@@ -161,6 +200,425 @@ const client = {
 };
 
 module.exports = { STORAGE_KEY, keyOf, listFavorites, getFavorite, saveFavorite, updateFavorite, deleteFavorite, isFavorited, searchFavorites, sortFavorites, client };
+
+},
+"shared/opportunity-store": function(require, module, exports) {
+'use strict';
+// All records and analysis cache remain in extension-local storage.
+
+const opportunity = require('./opportunity.js');
+const aiClient = require('./ai-client.js');
+const core = require('./core.js');
+
+const KEYS = { product: 'xp_v3_product', ai: 'xp_v3_ai', records: 'xp_v3_opportunities', cache: 'xp_v3_analysis' };
+const clean = (value, max = 1000) => String(value || '').trim().slice(0, max);
+const words = value => Array.isArray(value) ? value.map(x => clean(x, 60)).filter(Boolean).slice(0, 50) : String(value || '').split(/[,，\n]/).map(x => clean(x, 60)).filter(Boolean).slice(0, 50);
+
+function hash(text) {
+  let a = 2166136261, b = 2246822519;
+  for (let i = 0; i < text.length; i++) {
+    a = Math.imul(a ^ text.charCodeAt(i), 16777619);
+    b = Math.imul(b ^ text.charCodeAt(i), 3266489917);
+  }
+  return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
+}
+
+async function read(key, fallback) {
+  const data = await chrome.storage.local.get(key);
+  return data[key] ?? fallback;
+}
+async function write(key, value) { await chrome.storage.local.set({ [key]: value }); }
+
+async function getConfig() {
+  const [product, ai] = await Promise.all([read(KEYS.product, null), read(KEYS.ai, null)]);
+  const publicAi = ai ? { baseUrl: ai.baseUrl, model: ai.model, temperature: ai.temperature, timeout: ai.timeout, hasKey: !!ai.apiKey, verified: !!ai.verified } : null;
+  return { product, ai: publicAi };
+}
+
+async function saveProduct(input) {
+  const product = {
+    enabled: input?.enabled === true,
+    name: clean(input?.name, 100), description: clean(input?.description), problem: clean(input?.problem),
+    targetUsers: clean(input?.targetUsers), capabilities: clean(input?.capabilities),
+    keywords: words(input?.keywords), excludeKeywords: words(input?.excludeKeywords), budget: clean(input?.budget, 200)
+  };
+  if (product.enabled && !opportunity.validProduct(product)) throw new Error('请填写产品名称、简介、解决的问题、目标客户和核心能力');
+  await write(KEYS.product, product);
+  return product;
+}
+
+async function saveAI(input) {
+  const prior = await read(KEYS.ai, null);
+  const baseUrl = clean(input?.baseUrl, 500);
+  aiClient.endpointOf(baseUrl);
+  const model = clean(input?.model, 100);
+  const apiKey = clean(input?.apiKey, 500) || prior?.apiKey || '';
+  if (!model || !apiKey) throw new Error('请填写 Model 和 API Key');
+  const temperature = Number(input?.temperature);
+  const timeout = Number(input?.timeout);
+  if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error('Temperature 必须在 0 到 2 之间');
+  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 120000) throw new Error('Timeout 必须在 1000 到 120000 毫秒之间');
+  const verified = !!(prior?.verified && prior.baseUrl === baseUrl && prior.model === model && prior.apiKey === apiKey && prior.temperature === temperature && prior.timeout === timeout);
+  await write(KEYS.ai, { baseUrl, model, apiKey, temperature, timeout, verified });
+  return { baseUrl, model, temperature, timeout, hasKey: true, verified };
+}
+
+async function markVerified() {
+  const ai = await read(KEYS.ai, null);
+  if (!ai) throw new Error('请先保存 AI 设置');
+  await write(KEYS.ai, { ...ai, verified: true });
+}
+
+async function ready() {
+  const product = await read(KEYS.product, null);
+  const ai = await read(KEYS.ai, null);
+  if (!opportunity.validProduct(product)) throw new Error('请先在插件中填写并启用「我的产品」');
+  if (!ai?.verified || !ai.apiKey) throw new Error('请先在插件中配置 AI 并测试连接');
+  return { product, ai };
+}
+
+async function list(postId) {
+  const all = await read(KEYS.records, []);
+  return (Array.isArray(all) ? all : []).filter(x => !postId || x.postId === postId);
+}
+
+async function update(id, patch) {
+  const all = await list();
+  const index = all.findIndex(x => x.id === id);
+  if (index < 0) throw new Error('商机不存在');
+  const next = { ...all[index] };
+  if (typeof patch.favorite === 'boolean') next.favorite = patch.favorite;
+  if (typeof patch.note === 'string') next.note = clean(patch.note, 2000);
+  if (patch.tags !== undefined) next.tags = words(patch.tags);
+  next.updatedAt = Date.now();
+  all[index] = next;
+  await write(KEYS.records, all);
+  return next;
+}
+
+async function remove(id) {
+  const all = await list();
+  const item = all.find(x => x.id === id);
+  if (!item) return false;
+  await write(KEYS.records, all.filter(x => x.id !== id));
+  const cache = await read(KEYS.cache, {});
+  if (item.cacheKey && cache[item.cacheKey]?.signature === item.signature) {
+    delete cache[item.cacheKey];
+    await write(KEYS.cache, cache);
+  }
+  return true;
+}
+
+async function analyzeBatch(input, fetchImpl = fetch) {
+  const { product, ai } = await ready();
+  if (!Array.isArray(input) || input.length < 1 || input.length > 10) throw new Error('每批只能分析 1 至 10 条评论');
+  const items = input.map(x => {
+    if (!/^\d{1,40}$/.test(String(x.comment_id)) || !/^\d{1,40}$/.test(String(x.post_id)) || typeof x.comment !== 'string' || !x.comment.trim() || x.comment.length > 4000) throw new Error('评论数据无效');
+    return {
+      comment_id: x.comment_id, post_id: x.post_id,
+      comment: clean(x.comment, 4000), parent_post: clean(x.parent_post, 4000), reply_parent: clean(x.reply_parent, 4000),
+      author: { id: clean(x.author?.id, 40), handle: core.normalizeHandle(x.author?.handle), name: clean(x.author?.name, 100), followers: Number.isSafeInteger(x.author?.followers) && x.author.followers >= 0 ? x.author.followers : null, following: Number.isSafeInteger(x.author?.following) && x.author.following >= 0 ? x.author.following : null }
+    };
+  });
+  const cache = await read(KEYS.cache, {});
+  const pending = [], results = [];
+  for (const item of items) {
+    const sig = opportunity.signature({ id: item.comment_id, text: item.comment, parentPost: item.parent_post, replyParent: item.reply_parent }, product, ai.model, ai.baseUrl);
+    const key = hash(sig);
+    item.signature = sig; item.cacheKey = key;
+    if (cache[key]?.signature === sig) results.push({ item, result: cache[key].result, fromCache: true });
+    else pending.push(item);
+  }
+  if (pending.length) {
+    const analyzed = await aiClient.analyze(ai, product, pending, fetchImpl);
+    for (const result of analyzed) {
+      const item = pending.find(x => x.comment_id === result.comment_id);
+      cache[item.cacheKey] = { signature: item.signature, result };
+      results.push({ item, result, fromCache: false });
+    }
+    await write(KEYS.cache, cache);
+  }
+  const all = await list();
+  const output = [];
+  const profileKey = hash(JSON.stringify([product, ai.model, ai.baseUrl]));
+  let changedRecords = false;
+  for (const { item, result, fromCache } of results) {
+    if (!result.is_opportunity || result.opportunityScore < 40) {
+      const oldIndex = all.findIndex(x => x.commentId === item.comment_id && x.profileKey === profileKey);
+      if (oldIndex >= 0) { all.splice(oldIndex, 1); changedRecords = true; }
+      output.push({ commentId: item.comment_id, opportunity: null, fromCache }); continue;
+    }
+    const id = item.comment_id + ':' + item.cacheKey;
+    const index = all.findIndex(x => x.commentId === item.comment_id && x.profileKey === profileKey);
+    const prior = index >= 0 ? all[index] : null;
+    const now = Date.now();
+    const rec = {
+      id, cacheKey: item.cacheKey, signature: item.signature, commentId: item.comment_id, postId: item.post_id,
+      commentText: item.comment, parentPostText: item.parent_post, authorId: item.author.id,
+      authorHandle: item.author.handle, authorName: item.author.name, authorFollowers: item.author.followers, authorFollowing: item.author.following,
+      commentUrl: 'https://x.com/' + (item.author.handle || 'i') + '/status/' + item.comment_id,
+      productName: product.name, productSnapshot: JSON.stringify(product), profileKey, model: ai.model, aiEndpoint: ai.baseUrl,
+      opportunityType: result.opportunity_type, intentScore: result.intent_score, painScore: result.pain_score,
+      commercialScore: result.commercial_score, urgency: result.urgency, opportunityScore: result.opportunityScore,
+      productFitScore: result.product_fit_score, priorityScore: result.priorityScore,
+      need: result.need, painPoint: result.pain_point, budgetSignal: result.budget_signal,
+      fitReason: result.fit_reason, evidence: result.evidence, confidence: result.confidence,
+      favorite: prior?.favorite || false, note: prior?.note || '', tags: prior?.tags || [],
+      analyzedAt: now, createdAt: prior?.createdAt || now, updatedAt: now
+    };
+    if (index >= 0) all[index] = rec; else all.push(rec);
+    changedRecords = true;
+    output.push({ commentId: item.comment_id, opportunity: rec, fromCache });
+  }
+  if (changedRecords) await write(KEYS.records, all);
+  return { results: output, aiCount: pending.length };
+}
+
+module.exports = { KEYS, hash, getConfig, saveProduct, saveAI, markVerified, ready, list, update, remove, analyzeBatch };
+
+},
+"shared/opportunity": function(require, module, exports) {
+'use strict';
+// Pure rules, reply selection, AI result validation, and deterministic scoring.
+
+const TYPES = new Set(['tool_request', 'solution_request', 'api_request', 'purchase_intent', 'service_request', 'pain_point', 'outsourcing', 'collaboration', 'recommendation', 'other', 'not_opportunity']);
+const NEED = /有没有|求推荐|推荐一下|什么工具|有什么工具|找一个|寻找|求一个|哪里有|谁能|有没有人做|需要|求助|怎么解决|looking for|recommend|need a|any tool|how can i/i;
+const TOOL = /工具|软件|平台|saas|api|插件|系统|自动化|ai|app|service|integration/i;
+const PAIN = /太麻烦|效率低|人工|耗时|不会|做不出来|成本高|太贵|一直失败|很难|痛点|费时|slow|expensive|struggling|difficult/i;
+const COMMERCIAL = /多少钱|价格|购买|付费|收费|报价|预算|采购|合作|外包|付钱|pay|buy|price|budget|hire/i;
+const TRIVIAL = /^(?:哈+|确实|赞|支持|第一|6+|牛|牛逼|👍+|😂+|🤣+|🔥+)$/i;
+
+function ruleMatch(text, product = {}) {
+  const value = String(text || '').trim();
+  if (!value || value.length < 2 || TRIVIAL.test(value) || !/[\p{L}\p{N}]/u.test(value)) return false;
+  if (/加群|私信领取|点击链接|免费领|airdrop|giveaway|dm me/i.test(value)) return false;
+  const excluded = Array.isArray(product.excludeKeywords) ? product.excludeKeywords : [];
+  if (excluded.some(k => k && value.toLowerCase().includes(String(k).toLowerCase()))) return false;
+  return NEED.test(value) || PAIN.test(value) || COMMERCIAL.test(value) || (TOOL.test(value) && /求|找|需要|推荐|有没有|can|need|looking/i.test(value));
+}
+
+function belongsToThread(post, rootId, byId) {
+  if (!post?.isReply || post.isQuote || post.id === rootId) return false;
+  if (post.conversationId === rootId) return true;
+  const visited = new Set([post.id]);
+  let parentId = post.inReplyToId;
+  for (let depth = 0; parentId && depth < 30; depth++) {
+    if (parentId === rootId) return true;
+    if (visited.has(parentId)) return false;
+    visited.add(parentId);
+    parentId = byId.get(parentId)?.inReplyToId;
+  }
+  return false;
+}
+
+function commentsForThread(posts, rootId) {
+  const byId = new Map(posts.map(p => [p.id, p]));
+  return posts.filter(p => belongsToThread(p, rootId, byId)).sort((a, b) => (a.observedAt || 0) - (b.observedAt || 0));
+}
+
+function validProduct(p) {
+  return !!(p && p.enabled && ['name', 'description', 'problem', 'targetUsers', 'capabilities'].every(k => typeof p[k] === 'string' && p[k].trim()));
+}
+
+function signature(comment, product, model, endpoint) {
+  return JSON.stringify([comment.id, comment.text, comment.parentPost || '', comment.replyParent || '', product, model, endpoint]);
+}
+
+function parseAI(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { return JSON.parse(cleaned); } catch { throw new Error('AI 返回的不是有效 JSON'); }
+}
+
+function score(result) {
+  const urgency = { high: 100, medium: 50, low: 0, unknown: 0 }[result.urgency];
+  const opportunityScore = Math.round(result.intent_score * .4 + result.pain_score * .25 + result.commercial_score * .2 + urgency * .15);
+  const priorityScore = Math.round((opportunityScore * .6 + result.product_fit_score * .4) * 10) / 10;
+  return { opportunityScore, priorityScore };
+}
+
+function validateResult(raw, requested) {
+  if (!raw || typeof raw !== 'object' || typeof raw.comment_id !== 'string' || !requested.has(raw.comment_id)) throw new Error('AI 结果缺少对应评论 ID');
+  if (typeof raw.is_opportunity !== 'boolean' || !TYPES.has(raw.opportunity_type)) throw new Error('AI 商机类型无效');
+  for (const field of ['intent_score', 'pain_score', 'commercial_score', 'product_fit_score']) {
+    if (!Number.isFinite(raw[field]) || raw[field] < 0 || raw[field] > 100) throw new Error('AI 分数无效：' + field);
+  }
+  if (!['high', 'medium', 'low', 'unknown'].includes(raw.urgency)) throw new Error('AI 紧迫度无效');
+  if (!Number.isFinite(raw.confidence) || raw.confidence < 0 || raw.confidence > 1) throw new Error('AI 置信度无效');
+  for (const field of ['need', 'pain_point', 'budget_signal', 'fit_reason', 'evidence']) {
+    if (typeof raw[field] !== 'string' || raw[field].length > 1000) throw new Error('AI 字段无效：' + field);
+  }
+  const source = requested.get(raw.comment_id);
+  if (!raw.is_opportunity && raw.opportunity_type !== 'not_opportunity') throw new Error('AI 非商机类型矛盾');
+  if (raw.is_opportunity && (!raw.need.trim() || !raw.fit_reason.trim())) throw new Error('AI 商机缺少需求或匹配理由');
+  if (raw.is_opportunity && (!raw.evidence.trim() || ![source.comment, source.parent_post, source.reply_parent || ''].some(t => t.includes(raw.evidence)))) throw new Error('AI 判断依据不在原文中');
+  if (raw.is_opportunity && raw.opportunity_type === 'not_opportunity') throw new Error('AI 商机类型矛盾');
+  if (raw.budget_signal.toLowerCase() !== 'unknown' && !/预算|价格|多少钱|付费|购买|买|采购|报价|收费|pay|buy|budget|price|cost/i.test(source.comment)) throw new Error('评论没有明确预算或付费信号');
+  return { ...raw, ...score(raw) };
+}
+
+function validateBatch(parsed, items) {
+  if (!parsed || !Array.isArray(parsed.results)) throw new Error('AI 缺少 results 数组');
+  const requested = new Map(items.map(x => [x.comment_id, x]));
+  if (parsed.results.length !== items.length) throw new Error('AI 返回数量与请求不符');
+  const seen = new Set();
+  return parsed.results.map(raw => {
+    const result = validateResult(raw, requested);
+    if (seen.has(result.comment_id)) throw new Error('AI 返回重复评论');
+    seen.add(result.comment_id);
+    return result;
+  });
+}
+
+module.exports = { ruleMatch, belongsToThread, commentsForThread, validProduct, signature, parseAI, score, validateResult, validateBatch, TYPES };
+
+},
+"shared/ai-client": function(require, module, exports) {
+'use strict';
+
+const opportunity = require('./opportunity.js');
+
+function endpointOf(base) {
+  let url;
+  try { url = new URL(String(base || '').trim()); } catch { throw new Error('API Base URL 无效'); }
+  if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)))) throw new Error('AI 地址必须是 HTTPS 或本机 HTTP');
+  const path = url.pathname.replace(/\/+$/, '');
+  url.pathname = path.endsWith('/chat/completions') ? path : path + '/chat/completions';
+  return url.href;
+}
+
+function originPattern(base) {
+  const url = new URL(endpointOf(base));
+  return url.protocol + '//' + url.hostname + '/*';
+}
+
+async function requestChat(settings, messages, maxTokens, fetchImpl = fetch) {
+  const endpoint = endpointOf(settings.baseUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), settings.timeout || 30000);
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.apiKey },
+      body: JSON.stringify({ model: settings.model, temperature: settings.temperature, max_tokens: maxTokens, messages }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('AI 接口返回 HTTP ' + response.status);
+    const body = await response.text();
+    if (body.length > 250000) throw new Error('AI 响应过大');
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { throw new Error('AI 接口响应格式无效'); }
+    const content = parsed?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') throw new Error('AI 接口未返回文本');
+    return content;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('AI 请求超时');
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
+
+const SYSTEM = [
+  '你是 X 评论商机分析器。只输出 JSON 对象 {"results":[...]}，逐条对应输入 comment_id，不得遗漏或重复。',
+  '只根据原帖、回复上下文、评论和产品资料判断，不得编造预算、购买意愿或未出现的事实。粉丝数不能单独决定商机分数。',
+  '每项包含 comment_id,is_opportunity,opportunity_type,intent_score,pain_score,commercial_score,urgency,product_fit_score,need,pain_point,budget_signal,fit_reason,evidence,confidence。',
+  '分数为 0-100 数字；urgency 为 high/medium/low/unknown；confidence 为 0-1。budget_signal 未明确提到时写 unknown。',
+  'evidence 必须逐字摘录自该评论或提供的原帖/回复上下文；没有商机时 is_opportunity=false、opportunity_type=not_opportunity、evidence 可为空。',
+  'opportunity_type 只用 tool_request,solution_request,api_request,purchase_intent,service_request,pain_point,outsourcing,collaboration,recommendation,other,not_opportunity。'
+].join('\n');
+
+async function analyze(settings, product, items, fetchImpl = fetch) {
+  const payload = items.map(x => ({ comment_id: x.comment_id, parent_post: x.parent_post, reply_parent: x.reply_parent || '', comment: x.comment, author: x.author }));
+  const prompt = JSON.stringify({ product, comments: payload });
+  const response = await requestChat(settings, [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }], Math.min(8000, 800 + items.length * 550), fetchImpl);
+  return opportunity.validateBatch(opportunity.parseAI(response), payload);
+}
+
+async function testConnection(settings, fetchImpl = fetch) {
+  const content = await requestChat(settings, [{ role: 'user', content: 'Reply with OK.' }], 8, fetchImpl);
+  if (!content.trim()) throw new Error('AI 连接测试未返回内容');
+  return true;
+}
+
+module.exports = { endpointOf, originPattern, requestChat, analyze, testConnection };
+
+},
+"shared/core": function(require, module, exports) {
+'use strict';
+// Pure parsing/validation: no DOM, no storage, no side effects.
+// Extracts and normalizes user records from X response payloads.
+
+const reserved = new Set(['home','explore','notifications','messages','settings','search','i','compose','login','logout','signup','intent','tos','privacy']);
+
+function normalizeHandle(input) {
+  let value = String(input || '').trim();
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const u = new URL(value);
+      if (!['x.com','www.x.com','twitter.com','www.twitter.com'].includes(u.hostname)) return '';
+      value = u.pathname.split('/').filter(Boolean)[0] || '';
+    } catch { return ''; }
+  }
+  value = value.replace(/^@/, '').toLowerCase();
+  return /^[a-z0-9_]{1,15}$/.test(value) && !reserved.has(value) ? value : '';
+}
+
+function safeAvatar(input) {
+  try { const u = new URL(input); return u.protocol === 'https:' && u.hostname === 'pbs.twimg.com' ? u.href : ''; }
+  catch { return ''; }
+}
+
+function readCount(value) {
+  if (typeof value === 'string' && /^\d{1,16}$/.test(value)) value = Number(value);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function extractUsers(json) {
+  const queue = [json], found = new Map(), seen = new WeakSet();
+  let examined = 0;
+  while (queue.length && examined++ < 50000) {
+    const node = queue.pop();
+    if (!node || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    const handle = normalizeHandle(node.core?.screen_name || node.legacy?.screen_name || node.screen_name || node.username);
+    const followers = readCount(node.relationship_counts?.followers ?? node.relationship_counts?.followers_count ?? node.legacy?.followers_count ?? node.public_metrics?.followers_count ?? node.followers_count);
+    if (handle && followers !== null) {
+      const prior = found.get(handle);
+      const nullableInt = readCount;
+      const relationship = node.relationship_perspectives || node.legacy || {};
+      const item = {
+        handle, followers,
+        id: String(node.rest_id || node.id_str || node.id || '').slice(0,40),
+        name: String(node.core?.name || node.legacy?.name || node.name || handle).slice(0,100),
+        avatar: safeAvatar(node.avatar?.image_url || node.legacy?.profile_image_url_https || node.profile_image_url_https || node.profile_image_url),
+        following: nullableInt(node.relationship_counts?.following ?? node.relationship_counts?.following_count ?? node.legacy?.friends_count ?? node.public_metrics?.following_count ?? node.friends_count),
+        posts: nullableInt(node.tweet_counts?.tweets ?? node.legacy?.statuses_count ?? node.public_metrics?.tweet_count),
+        createdAt: String(node.core?.created_at || node.legacy?.created_at || '').slice(0,64),
+        followsYou: typeof relationship.followed_by === 'boolean' ? relationship.followed_by : null,
+        youFollow: typeof relationship.following === 'boolean' ? relationship.following : null
+      };
+      // A nested legacy object must not erase richer fields on its parent User.
+      if (!prior) found.set(handle, item);
+      else for (const [k, v] of Object.entries(item)) if ((prior[k] === null || prior[k] === '') && v !== null && v !== '') prior[k] = v;
+    }
+    for (const value of Object.values(node)) if (value && typeof value === 'object') queue.push(value);
+  }
+  return [...found.values()].slice(0,300);
+}
+
+function validateSample(sample, now = Date.now()) {
+  if (!sample || typeof sample !== 'object' || !normalizeHandle(sample.handle)) return null;
+  if (!Number.isSafeInteger(sample.followers) || sample.followers < 0) return null;
+  if (!Number.isFinite(sample.observedAt) || sample.observedAt > now + 5000 || sample.observedAt < now - 3600000) return null;
+  return {
+    id: typeof sample.id === 'string' ? sample.id.slice(0, 40) : '',
+    handle: normalizeHandle(sample.handle),
+    followers: sample.followers,
+    observedAt: sample.observedAt,
+    name: String(sample.name || sample.handle).slice(0, 100),
+    avatar: safeAvatar(sample.avatar)
+  };
+}
+
+module.exports = { normalizeHandle, safeAvatar, readCount, extractUsers, validateSample };
 
 }
 };

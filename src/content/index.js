@@ -10,9 +10,8 @@ const store = require('../shared/store.js');
 const transport = require('../shared/transport.js');
 const handle = require('../shared/handle.js');
 const favorites = require('../shared/favorites.js');
-const rules = require('../shared/rules.js');
 const dom = require('./dom.js');
-const renderer = require('./renderer.js');
+const createOpportunityUI = require('./opportunity-ui.js');
 const createTooltip = require('./tooltip.js');
 const createBadge = require('./badge.js');
 const createLayout = require('./layout.js');
@@ -37,7 +36,6 @@ const state = {
   hud: null
 };
 
-const postPlaced = new Map();
 const favoriteKeys = new Set();
 const favorite = chrome.runtime?.sendMessage ? {
   keyOf: favorites.keyOf,
@@ -59,6 +57,7 @@ const tooltip = createTooltip({ state, presentation, analytics, favorite, el: do
 const badge = createBadge({ state, presentation, tooltip, el: dom.el });
 const layout = createLayout({ state, handle, store, badge, tooltip, el: dom.el });
 const diagnostics = createDiagnostics({ state, version, el: dom.el });
+const opportunityUI = createOpportunityUI({ state, el: dom.el });
 
 function schedule() {
   if (state.initialized && !state.timer) state.timer = setTimeout(render, 120);
@@ -79,8 +78,8 @@ function render() {
     } else {
       document.querySelectorAll('article[data-testid="tweet"] [data-testid="User-Name"]').forEach(un => layout.reconcile(un, un, false));
       document.querySelectorAll('[data-testid="UserCell"]').forEach(cell => layout.reconcile(cell, layout.cellAnchor(cell), true));
-      reconcilePosts();
     }
+    opportunityUI.render();
     diagnostics.updateHud();
   } catch (error) {
     state.stats.lastError = '页面渲染：' + String(error.message || error).slice(0, 160);
@@ -89,52 +88,7 @@ function render() {
   }
 }
 
-function applyPostDecision(article, post) {
-  const postCfg = state.settings.post || {};
-  if (postCfg.highlightHighEngagement) {
-    const hl = rules.evaluateHighlight(post, { type: 'engagement', threshold: postCfg.rateThreshold, minViews: postCfg.minViews, enabled: true });
-    if (hl.triggered) renderer.applyHighlight(article);
-    else renderer.clearHighlight(article);
-  } else renderer.clearHighlight(article);
-
-  const filters = state.settings.filters || {};
-  if (filters.enabled) {
-    const decision = rules.evaluateFilter(post, state.settings);
-    if (decision.action === 'collapse') renderer.applyCollapse(article, dom.el);
-    else renderer.clearCollapse(article);
-  } else renderer.clearCollapse(article);
-}
-
-function reconcilePosts() {
-  const articles = document.querySelectorAll('article[data-testid="tweet"]');
-  const seen = new Set();
-  for (const article of articles) {
-    seen.add(article);
-    const id = renderer.getPostIdFromDOM(article);
-    const post = id ? state.posts.get(id) : null;
-    const old = postPlaced.get(article);
-    if (!post) {
-      if (old) { old.badge.remove(); postPlaced.delete(article); }
-      renderer.clearHighlight(article);
-      renderer.clearCollapse(article);
-      continue;
-    }
-    if (old && old.id === post.id && old.badge.isConnected) {
-      old.badge.textContent = renderer.postBadgeText(post, state.settings);
-    } else {
-      if (old) old.badge.remove();
-      const badge = renderer.renderPostBadge(article, post, state.settings, dom.el);
-      if (badge) postPlaced.set(article, { badge, id: post.id });
-    }
-    applyPostDecision(article, post);
-  }
-  for (const [article, rec] of postPlaced) {
-    if (!seen.has(article) || !article.isConnected) { rec.badge.remove(); postPlaced.delete(article); }
-  }
-}
-
 function consume(data) {
-  if (!state.settings.enabled) return;
   state.stats.packets++;
   state.stats.lastPacket = Date.now();
   state.stats.bridgeVersion = String(data.version || 'unknown').slice(0, 24);
@@ -166,6 +120,7 @@ const observer = createObserver({ state, owned: dom.owned, schedule });
 window.addEventListener('message', handleMessage);
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && (changes.xp_v3_product || changes.xp_v3_ai)) opportunityUI.reload();
   if (area === 'local' && changes[KEY]) {
     state.settings = config.config(changes[KEY].newValue);
     if (!state.settings.enabled) state.pending.length = 0;

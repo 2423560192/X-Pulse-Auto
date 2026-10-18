@@ -51,7 +51,7 @@ require('../content/index.js');
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '4.0.0';
+module.exports = '4.0.1';
 
 },
 "content/index": function(require, module, exports) {
@@ -795,11 +795,9 @@ function createOpportunityUI({ state, el }) {
     return cached?.text ? cached : visible ? { ...cached, ...visible } : undefined;
   }
   function pagePosts() {
-    articles();
     return [...seenPageIds].map(observedPost).filter(post => post?.text);
   }
   function pageClusters() {
-    articles();
     return [...clusters.values()].filter(x => x.sourceIds?.some(id => seenPageIds.has(id))).sort((a, b) => b.opportunityScore - a.opportunityScore);
   }
   function row(card, label, value) {
@@ -875,6 +873,7 @@ function createOpportunityUI({ state, el }) {
       if (location.href !== scanUrl) return;
       const signature = JSON.stringify([config.ai?.baseUrl, config.ai?.model]);
       if (signature !== scanSignature) { scanSignature = signature; attempted = new Set(); }
+      articles();
       const posts = pagePosts().filter(p => demand.scanCandidate(p.text));
       const candidateKey = p => JSON.stringify([p.id, p.text, observedPost(p.inReplyToId)?.text || '']);
       const selected = posts.filter(p => !attempted.has(candidateKey(p))).slice(0, 100);

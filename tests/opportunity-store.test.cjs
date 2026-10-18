@@ -41,6 +41,19 @@ test('AI connection is sufficient; old product configuration remains untouched a
   await store.ready();
 });
 
+test('API URL can be saved before Model and API Key and survives a later config read', async () => {
+  data = {};
+  const saved = await store.saveAI({ baseUrl: 'https://custom.example/v1', model: '', apiKey: '', temperature: .2, timeout: 30000 });
+  assert.equal(saved.baseUrl, 'https://custom.example/v1');
+  assert.equal(saved.hasKey, false);
+  const reopened = await store.getConfig();
+  assert.equal(reopened.ai.baseUrl, 'https://custom.example/v1');
+  assert.equal(reopened.ai.hasKey, false);
+  await assert.rejects(store.ready(), /测试连接/);
+  await store.saveAI({ ...ai, baseUrl: 'https://custom.example/v1' });
+  assert.equal((await store.getConfig()).ai.baseUrl, 'https://custom.example/v1');
+});
+
 test('similar discussions form one demand cluster; only user confirmation enters the pool', async () => {
   await setup();
   const first = await store.analyzeBatch(input, fetchImpl);

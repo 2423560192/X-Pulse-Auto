@@ -48,7 +48,7 @@ async function dispatchOpportunity(action, payload) {
     case 'ready': { await opportunities.ready(); return true; }
     case 'testAI': {
       const ai = (await chrome.storage.local.get(opportunities.KEYS.ai))[opportunities.KEYS.ai];
-      if (!ai?.apiKey) throw new Error('请先保存 AI 设置');
+      if (!ai?.apiKey || !ai.model) throw new Error('请先填写 Model 和 API Key 并保存');
       const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
       if (!granted) throw new Error('未获得 AI 服务域名权限');
       await aiClient.testConnection(ai);

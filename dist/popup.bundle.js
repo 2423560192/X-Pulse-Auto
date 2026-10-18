@@ -169,6 +169,14 @@ function opportunityRpc(action, payload = {}) {
   }));
 }
 const field = id => document.getElementById(id);
+let aiEdited = false;
+for (const id of ['ai-base', 'ai-key', 'ai-model', 'ai-temperature', 'ai-timeout']) {
+  field(id).addEventListener('input', () => {
+    aiEdited = true;
+    field('ai-status').dataset.state = '';
+    field('ai-status').textContent = '正在编辑，点击保存后才会保留';
+  });
+}
 function aiInput() {
   return {
     baseUrl: field('ai-base').value, apiKey: field('ai-key').value, model: field('ai-model').value,
@@ -176,19 +184,48 @@ function aiInput() {
   };
 }
 function paintAI(ai) {
-  if (!ai) return;
+  if (!ai) {
+    field('ai-status').textContent = '尚未保存 AI 设置';
+    return;
+  }
   field('ai-base').value = ai.baseUrl;
   field('ai-model').value = ai.model;
   field('ai-temperature').value = ai.temperature;
   field('ai-timeout').value = ai.timeout;
   field('ai-key').value = '';
-  field('ai-status').textContent = ai.verified ? '连接已测试，可以开始扫描' : ai.hasKey ? '已保存 Key，需测试连接' : '尚未设置 API Key';
+  field('ai-status').textContent = ai.verified
+    ? '连接已测试，可以开始扫描'
+    : !ai.model || !ai.hasKey
+      ? 'API URL 已保存，需填写 Model 和 API Key'
+      : '已保存 Key，需测试连接';
 }
 
-opportunityRpc('config').then(({ ai }) => paintAI(ai)).catch(e => { error.textContent = e.message; });
+opportunityRpc('config').then(({ ai }) => {
+  if (!aiEdited) paintAI(ai);
+}).catch(e => { error.textContent = e.message; });
 field('save-ai').addEventListener('click', async () => {
-  try { paintAI(await opportunityRpc('saveAI', { ai: aiInput() })); error.textContent = ''; }
-  catch (e) { error.textContent = e.message; }
+  aiEdited = true;
+  const button = field('save-ai');
+  const status = field('ai-status');
+  button.disabled = true;
+  status.dataset.state = 'pending';
+  status.textContent = '正在保存 AI 设置…';
+  try {
+    const saved = await opportunityRpc('saveAI', { ai: aiInput() });
+    paintAI(saved);
+    status.dataset.state = 'success';
+    status.textContent = !saved.model || !saved.hasKey
+      ? 'API URL 已保存。填写 Model 和 API Key 后再测试连接'
+      : saved.verified
+        ? 'AI 设置已保存，连接测试仍有效，可以开始扫描'
+        : 'AI 设置已保存。请测试连接并授权域名后开始扫描';
+    error.textContent = '';
+  } catch (e) {
+    status.dataset.state = 'error';
+    status.textContent = '保存失败：' + (e?.message || String(e));
+  } finally {
+    button.disabled = false;
+  }
 });
 attachAIConnection({
   button: field('test-ai'), status: field('ai-status'), readInput: aiInput,

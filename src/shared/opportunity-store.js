@@ -26,13 +26,12 @@ async function saveAI(input) {
   const baseUrl = clean(input?.baseUrl, 500);
   aiClient.endpointOf(baseUrl);
   const model = clean(input?.model, 100), apiKey = clean(input?.apiKey, 500) || prior?.apiKey || '';
-  if (!model || !apiKey) throw new Error('请填写 Model 和 API Key');
   const temperature = Number(input?.temperature), timeout = Number(input?.timeout);
   if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error('Temperature 必须在 0 到 2 之间');
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 120000) throw new Error('Timeout 必须在 1000 到 120000 毫秒之间');
   const verified = !!(prior?.verified && prior.baseUrl === baseUrl && prior.model === model && prior.apiKey === apiKey && prior.temperature === temperature && prior.timeout === timeout);
   await write(KEYS.ai, { baseUrl, model, apiKey, temperature, timeout, verified });
-  return { baseUrl, model, temperature, timeout, hasKey: true, verified };
+  return { baseUrl, model, temperature, timeout, hasKey: !!apiKey, verified };
 }
 async function markVerified() {
   const ai = await read(KEYS.ai, null);
@@ -41,7 +40,7 @@ async function markVerified() {
 }
 async function ready() {
   const ai = await read(KEYS.ai, null);
-  if (!ai?.verified || !ai.apiKey) throw new Error('请先在插件中配置 AI 并测试连接');
+  if (!ai?.verified || !ai.apiKey || !ai.model) throw new Error('请先在插件中配置 AI 并测试连接');
   return { ai };
 }
 

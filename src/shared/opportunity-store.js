@@ -5,7 +5,7 @@ const demand = require('./opportunity.js');
 const aiClient = require('./ai-client.js');
 const core = require('./core.js');
 
-const KEYS = { ai: 'xp_v3_ai', discoveries: 'xp_v4_discoveries', clusters: 'xp_v4_clusters', cache: 'xp_v4_analysis' };
+const KEYS = { ai: 'xp_v3_ai', discoveries: 'xp_v4_discoveries', clusters: 'xp_v4_clusters', cache: 'xp_v4_analysis', replies: 'xp_v4_replies' };
 const clean = (value, max = 1000) => String(value ?? '').trim().slice(0, max);
 const words = value => Array.isArray(value) ? value.map(x => clean(x, 60)).filter(Boolean).slice(0, 30) : String(value || '').split(/[,，\n]/).map(x => clean(x, 60)).filter(Boolean).slice(0, 30);
 
@@ -154,4 +154,31 @@ async function analyzeBatch(input, fetchImpl = fetch) {
   return { results: output, aiCount: pending.length, clusters: clusters.filter(x => output.some(y => y.clusterId === x.id)) };
 }
 
-module.exports = { KEYS, hash, getConfig, saveAI, markVerified, ready, list, pool, addToPool, update, remove, normalizeInput, rebuild, analyzeBatch };
+function normalizeReplyPost(input) {
+  const id = String(input?.id || '');
+  if (!/^\d{1,40}$/.test(id)) throw new Error('帖子 ID 无效');
+  const text = clean(input?.text, 4000);
+  if (text.length < 2) throw new Error('帖子内容为空，无法生成回复');
+  return { id, text, authorHandle: core.normalizeHandle(input?.author_handle) };
+}
+
+async function suggestReplies(input, force = false, fetchImpl = fetch) {
+  const { ai } = await ready();
+  const post = normalizeReplyPost(input);
+  const signature = JSON.stringify(['reply-v1', post.id, post.text, post.authorHandle, ai.model, ai.baseUrl]);
+  const key = hash(signature);
+  const stored = await read(KEYS.replies, {});
+  const cache = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  const cached = cache[key];
+  if (!force && cached?.signature === signature && Array.isArray(cached.replies) && cached.replies.length) {
+    return { replies: cached.replies, fromCache: true };
+  }
+  const replies = await aiClient.suggestReplies(ai, post, fetchImpl);
+  cache[key] = { signature, replies, at: Date.now() };
+  const keys = Object.keys(cache);
+  while (keys.length > 200) delete cache[keys.shift()];
+  await write(KEYS.replies, cache);
+  return { replies, fromCache: false };
+}
+
+module.exports = { KEYS, hash, getConfig, saveAI, markVerified, ready, list, pool, addToPool, update, remove, normalizeInput, rebuild, analyzeBatch, normalizeReplyPost, suggestReplies };

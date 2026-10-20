@@ -103,3 +103,29 @@ test('invalid batch sizes and duplicate IDs fail before AI', async () => {
   await assert.rejects(store.analyzeBatch([input[0], input[0]], fetchImpl), /重复/);
   assert.equal(calls, 0);
 });
+
+test('reply suggestions validate the post, reuse the cache, and force a fresh batch', async () => {
+  await setup();
+  const post = { id: '42', text: '新买的机械键盘三天键帽就打油了，这正常吗', author_handle: 'alice' };
+  const fetchReply = async () => {
+    calls++;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ replies: [
+      { tone: '共鸣', text: '键帽打油真的看手，我上一把也是三天就油了' },
+      { tone: '追问', text: '什么轴？手汗重的话打油会更快' },
+      { tone: '轻吐槽', text: '这键盘是让你盘出包浆来了' }
+    ] }) } }] }));
+  };
+  const fresh = await store.suggestReplies(post, false, fetchReply);
+  assert.equal(fresh.fromCache, false);
+  assert.equal(fresh.replies.length, 3);
+  assert.equal(calls, 1);
+  const cached = await store.suggestReplies(post, false, fetchReply);
+  assert.equal(cached.fromCache, true);
+  assert.equal(calls, 1);
+  const forced = await store.suggestReplies(post, true, fetchReply);
+  assert.equal(forced.fromCache, false);
+  assert.equal(calls, 2);
+  await assert.rejects(store.suggestReplies({ id: 'not-a-post', text: '内容' }, false, fetchReply), /ID/);
+  await assert.rejects(store.suggestReplies({ id: '42', text: ' ' }, false, fetchReply), /内容为空/);
+  assert.equal(calls, 2);
+});

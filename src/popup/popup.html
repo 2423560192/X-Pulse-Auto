@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>X Pulse</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>粉丝徽标 · 需求机会雷达</p></div><span class="version">4.0.0</span></header>
+<header><img src="icons/48.png" width="34" height="34" alt=""><div><h1>X PULSE</h1><p>粉丝徽标 · 需求机会雷达 · 回复建议</p></div><span class="version">4.1.1</span></header>
 <div class="intro"><span class="status-dot"></span><strong id="status">打开 X，即可自动显示</strong><p>在 X 页面手动扫描已加载的帖子和评论</p></div>
 <main>
 <details><summary>粉丝徽标与账号收藏</summary>
@@ -26,6 +26,7 @@
   <label class="stack">Timeout（毫秒）<input id="ai-timeout" type="number" min="1000" max="120000" step="1000" value="30000"></label>
   <div class="button-row"><button type="button" id="save-ai">保存 AI 设置</button><button type="button" id="test-ai">测试连接并授权域名</button></div>
   <p id="ai-status" class="hint" role="status" aria-live="polite">尚未测试连接</p>
+  <p class="hint">配置完成后，在 X 帖子的操作栏下方点「✦ 想回复」，即可按原帖语气生成 3 条像真人写的中文/英文回复建议，可一键复制。</p>
   <p class="hint">设置保存在当前浏览器的扩展本地存储中，关闭并重新打开浏览器后仍会保留；不会云同步。卸载扩展或清除扩展数据会删除设置。</p>
 </details>
 <details open><summary>发现的需求</summary>
@@ -36,5 +37,5 @@
   <ul id="opp-list"></ul><div id="opp-detail"></div>
 </details>
 <p id="diagnostic" role="status">正在检查当前标签页…</p><p id="error" role="alert"></p>
-</main><footer>只观察 X 页面已加载的数据。扫描由你手动触发；讨论文本会发往你配置的 AI 服务。趋势与竞争判断仅基于已扫描样本。</footer>
+</main><footer>只观察 X 页面已加载的数据。扫描和回复建议都由你手动触发；帖子文本会发往你配置的 AI 服务。趋势与竞争判断仅基于已扫描样本。</footer>
 <script src="popup.bundle.js"></script></body></html>

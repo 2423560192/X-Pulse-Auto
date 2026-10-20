@@ -1,6 +1,7 @@
 'use strict';
 
 const demand = require('../shared/opportunity.js');
+const context = require('./post-context.js');
 
 function rpc(action, payload = {}) {
   return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
@@ -8,16 +9,6 @@ function rpc(action, payload = {}) {
     if (!response?.ok) return reject(new Error(response?.error || '需求机会操作失败'));
     resolve(response.result);
   }));
-}
-
-function postIdFromArticle(article) {
-  const dated = article.querySelector?.('time')?.closest?.('a[href]');
-  const links = dated ? [dated] : article.querySelectorAll?.('a[href]') || [];
-  for (const link of links) {
-    const match = String(link.getAttribute('href') || '').match(/\/status\/(\d{1,40})(?:[/?#]|$)/);
-    if (match) return match[1];
-  }
-  return '';
 }
 
 function createOpportunityUI({ state, el }) {
@@ -59,11 +50,10 @@ function createOpportunityUI({ state, el }) {
   window.addEventListener('resize', () => { if (position && panel?.isConnected) placePanel(position.left, position.top); });
 
   function articles() {
-    const found = [...document.querySelectorAll('article[data-testid="tweet"]')].map(article => ({ article, id: postIdFromArticle(article) })).filter(x => x.id);
+    const found = [...document.querySelectorAll('article[data-testid="tweet"]')].map(article => ({ article, id: context.postIdOf(article) })).filter(x => x.id);
     for (const { article, id } of found) {
       seenPageIds.add(id);
-      const textNode = article.querySelector?.('[data-testid="tweetText"]');
-      const text = String(textNode?.innerText || textNode?.textContent || '').trim().slice(0, 4000);
+      const text = context.textOf(article);
       if (text) seenDomPosts.set(id, { id, text });
     }
     return found;
@@ -194,7 +184,7 @@ function createOpportunityUI({ state, el }) {
     const byPost = new Map();
     for (const rec of pageClusters()) for (const id of rec.sourceIds) byPost.set(id, rec);
     for (const [article, marker] of markers) {
-      const id = postIdFromArticle(article);
+      const id = context.postIdOf(article);
       if (!article.isConnected || !byPost.has(id) || marker.dataset.xpPostId !== id) { marker.remove(); markers.delete(article); }
     }
     for (const { article, id } of visible) {
@@ -207,7 +197,7 @@ function createOpportunityUI({ state, el }) {
     drawPanel();
   }
 
-  return { render, scan, postIdFromArticle, reload: load };
+  return { render, scan, postIdFromArticle: context.postIdOf, reload: load };
 }
 
 module.exports = createOpportunityUI;

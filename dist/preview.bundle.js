@@ -51,7 +51,7 @@ require('../content/index.js');
 'use strict';
 // Single source of truth for the extension version.
 // build.cjs reads this value and injects it into dist/manifest.json and dist/bridge.js.
-module.exports = '4.0.1';
+module.exports = '4.1.1';
 
 },
 "content/index": function(require, module, exports) {
@@ -69,6 +69,7 @@ const handle = require('../shared/handle.js');
 const favorites = require('../shared/favorites.js');
 const dom = require('./dom.js');
 const createOpportunityUI = require('./opportunity-ui.js');
+const createReplyUI = require('./reply-ui.js');
 const createTooltip = require('./tooltip.js');
 const createBadge = require('./badge.js');
 const createLayout = require('./layout.js');
@@ -115,6 +116,7 @@ const badge = createBadge({ state, presentation, tooltip, el: dom.el });
 const layout = createLayout({ state, handle, store, badge, tooltip, el: dom.el });
 const diagnostics = createDiagnostics({ state, version, el: dom.el });
 const opportunityUI = createOpportunityUI({ state, el: dom.el });
+const replyUI = createReplyUI({ state, el: dom.el });
 
 function schedule() {
   if (state.initialized && !state.timer) state.timer = setTimeout(render, 120);
@@ -137,6 +139,7 @@ function render() {
       document.querySelectorAll('[data-testid="UserCell"]').forEach(cell => layout.reconcile(cell, layout.cellAnchor(cell), true));
     }
     opportunityUI.render();
+    replyUI.render();
     diagnostics.updateHud();
   } catch (error) {
     state.stats.lastError = '页面渲染：' + String(error.message || error).slice(0, 160);
@@ -713,7 +716,7 @@ function theme() {
 
 function owned(node) {
   const n = node.nodeType === 1 ? node : node.parentElement;
-  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud,.xp-opp-panel,.xp-opp-launcher,.xp-opp-marker,.xp-opp-modal');
+  return !!n?.closest?.('.xp-badge,.xp-badge-line,#xp-inline-tip,#xp-inline-hud,.xp-opp-panel,.xp-opp-launcher,.xp-opp-marker,.xp-opp-modal,.xp-reply-chip,.xp-reply-modal');
 }
 
 module.exports = { el, theme, owned };
@@ -723,6 +726,7 @@ module.exports = { el, theme, owned };
 'use strict';
 
 const demand = require('../shared/opportunity.js');
+const context = require('./post-context.js');
 
 function rpc(action, payload = {}) {
   return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
@@ -730,16 +734,6 @@ function rpc(action, payload = {}) {
     if (!response?.ok) return reject(new Error(response?.error || '需求机会操作失败'));
     resolve(response.result);
   }));
-}
-
-function postIdFromArticle(article) {
-  const dated = article.querySelector?.('time')?.closest?.('a[href]');
-  const links = dated ? [dated] : article.querySelectorAll?.('a[href]') || [];
-  for (const link of links) {
-    const match = String(link.getAttribute('href') || '').match(/\/status\/(\d{1,40})(?:[/?#]|$)/);
-    if (match) return match[1];
-  }
-  return '';
 }
 
 function createOpportunityUI({ state, el }) {
@@ -781,11 +775,10 @@ function createOpportunityUI({ state, el }) {
   window.addEventListener('resize', () => { if (position && panel?.isConnected) placePanel(position.left, position.top); });
 
   function articles() {
-    const found = [...document.querySelectorAll('article[data-testid="tweet"]')].map(article => ({ article, id: postIdFromArticle(article) })).filter(x => x.id);
+    const found = [...document.querySelectorAll('article[data-testid="tweet"]')].map(article => ({ article, id: context.postIdOf(article) })).filter(x => x.id);
     for (const { article, id } of found) {
       seenPageIds.add(id);
-      const textNode = article.querySelector?.('[data-testid="tweetText"]');
-      const text = String(textNode?.innerText || textNode?.textContent || '').trim().slice(0, 4000);
+      const text = context.textOf(article);
       if (text) seenDomPosts.set(id, { id, text });
     }
     return found;
@@ -916,7 +909,7 @@ function createOpportunityUI({ state, el }) {
     const byPost = new Map();
     for (const rec of pageClusters()) for (const id of rec.sourceIds) byPost.set(id, rec);
     for (const [article, marker] of markers) {
-      const id = postIdFromArticle(article);
+      const id = context.postIdOf(article);
       if (!article.isConnected || !byPost.has(id) || marker.dataset.xpPostId !== id) { marker.remove(); markers.delete(article); }
     }
     for (const { article, id } of visible) {
@@ -929,7 +922,7 @@ function createOpportunityUI({ state, el }) {
     drawPanel();
   }
 
-  return { render, scan, postIdFromArticle, reload: load };
+  return { render, scan, postIdFromArticle: context.postIdOf, reload: load };
 }
 
 module.exports = createOpportunityUI;
@@ -1030,6 +1023,241 @@ function summarizeCluster(meta, items, previous = {}) {
 }
 
 module.exports = { scanCandidate, parseAI, validateBatch, normalizeName, summarizeCluster, trendOf };
+
+},
+"content/post-context": function(require, module, exports) {
+'use strict';
+// DOM -> post context readers shared by the content-script features.
+// X virtualizes rows, so callers must re-read the article on every use instead
+// of caching the post text against a DOM node.
+
+function postIdOf(article) {
+  const dated = article.querySelector?.('time')?.closest?.('a[href]');
+  const links = dated ? [dated] : article.querySelectorAll?.('a[href]') || [];
+  for (const link of links) {
+    const match = String(link.getAttribute('href') || '').match(/\/status\/(\d{1,40})(?:[/?#]|$)/);
+    if (match) return match[1];
+  }
+  return '';
+}
+
+function authorHandleOf(article) {
+  const nameBlock = article.querySelector?.('[data-testid="User-Name"]');
+  const links = nameBlock?.querySelectorAll?.('a[href]') || [];
+  for (const link of links) {
+    const match = String(link.getAttribute('href') || '').match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+    if (match) return match[1];
+  }
+  return '';
+}
+
+function textOf(article) {
+  const node = article.querySelector?.('[data-testid="tweetText"]');
+  return String(node?.innerText || node?.textContent || '').trim().slice(0, 4000);
+}
+
+function readPost(article) {
+  const text = textOf(article);
+  if (!text) return null;
+  const id = postIdOf(article);
+  if (!id) return null;
+  return { id, text, authorHandle: authorHandleOf(article) };
+}
+
+module.exports = { postIdOf, authorHandleOf, textOf, readPost };
+
+},
+"content/reply-ui": function(require, module, exports) {
+'use strict';
+// Reply suggestions: a small chip under each post opens a card with short,
+// human-sounding replies the user can copy. The post is re-read from the DOM on
+// every click because X recycles article nodes while scrolling.
+
+const context = require('./post-context.js');
+
+const CARD_TITLE = '回复建议';
+
+function rpc(action, payload = {}) {
+  return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: 'xp-opportunity', action, payload }, response => {
+    if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+    if (!response?.ok) return reject(new Error(response?.error || '回复建议操作失败'));
+    resolve(response.result);
+  }));
+}
+
+async function copyToClipboard(text) {
+  if (!navigator?.clipboard?.writeText) throw new Error('当前浏览器不支持一键复制，请手动选中文本');
+  await navigator.clipboard.writeText(text);
+}
+
+function shorten(text, max) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return value.length > max ? value.slice(0, max) + '…' : value;
+}
+
+function createReplyUI({ state, el }) {
+  const chips = new Map(); // article -> button
+  let overlay = null, busy = false, error = '', activePost = null, suggestions = [], copiedText = '', token = 0, lastUrl = '';
+
+  const closeCard = () => {
+    token++;
+    overlay?.remove();
+    overlay = null;
+    document.removeEventListener?.('keydown', onKeydown);
+  };
+
+  function onKeydown(event) {
+    if (event.key === 'Escape') closeCard();
+  }
+
+  function draw() {
+    if (!overlay) return;
+    overlay.replaceChildren();
+    const card = el('section', 'xp-reply-card');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', CARD_TITLE);
+    const head = el('div', 'xp-reply-head');
+    head.append(el('strong', '', CARD_TITLE));
+    const close = el('button', 'xp-reply-close', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', '关闭回复建议');
+    close.addEventListener('click', closeCard);
+    head.append(close);
+    card.append(head);
+
+    if (activePost) {
+      card.append(el('p', 'xp-reply-context', shorten((activePost.authorHandle ? '@' + activePost.authorHandle + ' · ' : '') + activePost.text, 96)));
+    }
+    if (error) card.append(el('p', 'xp-reply-error', error));
+    if (busy) {
+      card.append(el('p', 'xp-reply-status', '正在按原帖的语气想回复…'));
+    } else if (suggestions.length) {
+      const list = el('div', 'xp-reply-list');
+      for (const item of suggestions) {
+        const row = el('div', 'xp-reply-item');
+        const top = el('div', 'xp-reply-item-head');
+        top.append(el('span', 'xp-reply-tone', item.tone || '回复'));
+        const copy = el('button', 'xp-reply-copy', copiedText === item.text ? '已复制' : '复制');
+        copy.type = 'button';
+        copy.addEventListener('click', () => copyOne(item.text));
+        top.append(copy);
+        row.append(top, el('p', 'xp-reply-text', item.text));
+        list.append(row);
+      }
+      card.append(list);
+    }
+
+    const actions = el('div', 'xp-reply-actions');
+    const again = el('button', 'xp-reply-button', busy ? '正在生成…' : suggestions.length ? '换一批' : '再试一次');
+    again.type = 'button';
+    again.disabled = busy;
+    again.addEventListener('click', () => { if (activePost) load(activePost, true); });
+    const done = el('button', 'xp-reply-button', '关闭');
+    done.type = 'button';
+    done.addEventListener('click', closeCard);
+    actions.append(again, done);
+    card.append(actions);
+    overlay.append(card);
+  }
+
+  async function copyOne(text) {
+    try {
+      await copyToClipboard(text);
+      copiedText = text;
+      error = '';
+    } catch (e) {
+      error = e?.message || String(e);
+    }
+    draw();
+  }
+
+  function open(article) {
+    const post = context.readPost(article);
+    if (!post) return;
+    activePost = post;
+    suggestions = [];
+    copiedText = '';
+    error = '';
+    token++;
+    if (!overlay) {
+      overlay = el('div', 'xp-reply-modal');
+      overlay.addEventListener('click', event => { if (event.target === overlay) closeCard(); });
+      document.documentElement.append(overlay);
+      document.addEventListener?.('keydown', onKeydown);
+    }
+    load(post, false);
+  }
+
+  async function load(post, force) {
+    const requestToken = ++token;
+    busy = true;
+    error = '';
+    draw();
+    try {
+      const result = await rpc('reply', {
+        post: { id: post.id, text: post.text, author_handle: post.authorHandle },
+        force
+      });
+      if (requestToken !== token) return;
+      suggestions = Array.isArray(result?.replies) ? result.replies : [];
+      if (!suggestions.length) throw new Error('AI 没有返回可用的回复，请重试');
+      copiedText = '';
+    } catch (e) {
+      if (requestToken !== token) return;
+      suggestions = [];
+      error = e?.message || String(e);
+    } finally {
+      if (requestToken === token) {
+        busy = false;
+        draw();
+      }
+    }
+  }
+
+  function chipFor(article) {
+    let chip = chips.get(article);
+    if (!chip) {
+      chip = el('button', 'xp-reply-chip', '✦ 想回复');
+      chip.type = 'button';
+      chip.setAttribute('aria-label', '为这条帖子生成回复建议');
+      chip.addEventListener('click', event => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        open(article);
+      });
+      chips.set(article, chip);
+    }
+    return chip;
+  }
+
+  function render() {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      if (overlay) closeCard();
+    }
+    const live = new Set();
+    for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
+      live.add(article);
+      if (!context.readPost(article)) {
+        chips.get(article)?.remove();
+        chips.delete(article);
+        continue;
+      }
+      const chip = chipFor(article);
+      if (chip.parentElement !== article) article.append(chip);
+    }
+    for (const [article, chip] of chips) {
+      if (!live.has(article) || !article.isConnected) {
+        chip.remove();
+        chips.delete(article);
+      }
+    }
+  }
+
+  return { render, open, close: closeCard };
+}
+
+module.exports = createReplyUI;
 
 },
 "content/tooltip": function(require, module, exports) {

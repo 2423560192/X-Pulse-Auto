@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "111",
   "name": "X Pulse · 需求机会雷达",
-  "version": "4.0.1",
+  "version": "4.1.1",
   "description": "浏览 X 时显示粉丝数，并从已加载的讨论中发现可做的产品或服务机会。",
   "permissions": [
     "storage"

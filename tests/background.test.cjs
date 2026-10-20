@@ -53,3 +53,16 @@ test('AI connection refuses revoked host permission',async()=>{
   assert.match(tested.error,/权限/);
   permission=true;
 });
+test('reply suggestions need a configured AI and a granted host permission',async()=>{
+  reset();
+  const unconfigured=await sendOpp('reply',{post:{id:'1',text:'测试帖子'}});
+  assert.equal(unconfigured.ok,false);
+  assert.match(unconfigured.error,/AI/);
+  reset();
+  storage.xp_v3_ai={baseUrl:'https://example.com/v1',apiKey:'secret',model:'m',temperature:.2,timeout:30000,verified:true};
+  permission=false;
+  const revoked=await sendOpp('reply',{post:{id:'1',text:'测试帖子'}});
+  assert.equal(revoked.ok,false);
+  assert.match(revoked.error,/权限/);
+  permission=true;
+});

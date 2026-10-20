@@ -65,6 +65,12 @@ async function dispatchOpportunity(action, payload) {
     case 'addToPool': return opportunities.addToPool(payload.id);
     case 'update': return opportunities.update(payload.id, payload.patch || {});
     case 'remove': return opportunities.remove(payload.id);
+    case 'reply': {
+      const { ai } = await opportunities.ready();
+      const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
+      if (!granted) throw new Error('AI 服务域名权限已失效，请重新测试连接');
+      return opportunities.suggestReplies(payload.post, !!payload.force);
+    }
     case 'analyze': {
       const { ai } = await opportunities.ready();
       const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
@@ -78,7 +84,7 @@ async function dispatchOpportunity(action, payload) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== 'xp-opportunity') return undefined;
   const task = () => dispatchOpportunity(message.action, message.payload || {});
-  const p = ['saveAI', 'testAI', 'addToPool', 'update', 'remove', 'analyze'].includes(message.action) ? enqueue(task) : task();
+  const p = ['saveAI', 'testAI', 'addToPool', 'update', 'remove', 'analyze', 'reply'].includes(message.action) ? enqueue(task) : task();
   p.then(result => sendResponse({ ok: true, result }))
     .catch(err => sendResponse({ ok: false, error: String((err && err.message) || err) }));
   return true;
@@ -211,7 +217,7 @@ const demand = require('./opportunity.js');
 const aiClient = require('./ai-client.js');
 const core = require('./core.js');
 
-const KEYS = { ai: 'xp_v3_ai', discoveries: 'xp_v4_discoveries', clusters: 'xp_v4_clusters', cache: 'xp_v4_analysis' };
+const KEYS = { ai: 'xp_v3_ai', discoveries: 'xp_v4_discoveries', clusters: 'xp_v4_clusters', cache: 'xp_v4_analysis', replies: 'xp_v4_replies' };
 const clean = (value, max = 1000) => String(value ?? '').trim().slice(0, max);
 const words = value => Array.isArray(value) ? value.map(x => clean(x, 60)).filter(Boolean).slice(0, 30) : String(value || '').split(/[,，\n]/).map(x => clean(x, 60)).filter(Boolean).slice(0, 30);
 
@@ -360,7 +366,34 @@ async function analyzeBatch(input, fetchImpl = fetch) {
   return { results: output, aiCount: pending.length, clusters: clusters.filter(x => output.some(y => y.clusterId === x.id)) };
 }
 
-module.exports = { KEYS, hash, getConfig, saveAI, markVerified, ready, list, pool, addToPool, update, remove, normalizeInput, rebuild, analyzeBatch };
+function normalizeReplyPost(input) {
+  const id = String(input?.id || '');
+  if (!/^\d{1,40}$/.test(id)) throw new Error('帖子 ID 无效');
+  const text = clean(input?.text, 4000);
+  if (text.length < 2) throw new Error('帖子内容为空，无法生成回复');
+  return { id, text, authorHandle: core.normalizeHandle(input?.author_handle) };
+}
+
+async function suggestReplies(input, force = false, fetchImpl = fetch) {
+  const { ai } = await ready();
+  const post = normalizeReplyPost(input);
+  const signature = JSON.stringify(['reply-v1', post.id, post.text, post.authorHandle, ai.model, ai.baseUrl]);
+  const key = hash(signature);
+  const stored = await read(KEYS.replies, {});
+  const cache = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  const cached = cache[key];
+  if (!force && cached?.signature === signature && Array.isArray(cached.replies) && cached.replies.length) {
+    return { replies: cached.replies, fromCache: true };
+  }
+  const replies = await aiClient.suggestReplies(ai, post, fetchImpl);
+  cache[key] = { signature, replies, at: Date.now() };
+  const keys = Object.keys(cache);
+  while (keys.length > 200) delete cache[keys.shift()];
+  await write(KEYS.replies, cache);
+  return { replies, fromCache: false };
+}
+
+module.exports = { KEYS, hash, getConfig, saveAI, markVerified, ready, list, pool, addToPool, update, remove, normalizeInput, rebuild, analyzeBatch, normalizeReplyPost, suggestReplies };
 
 },
 "shared/opportunity": function(require, module, exports) {
@@ -464,6 +497,7 @@ module.exports = { scanCandidate, parseAI, validateBatch, normalizeName, summari
 'use strict';
 
 const opportunity = require('./opportunity.js');
+const reply = require('./reply.js');
 
 function endpointOf(base) {
   let url;
@@ -552,7 +586,109 @@ async function testConnection(settings, fetchImpl = fetch) {
   return true;
 }
 
-module.exports = { endpointOf, originPattern, requestChat, analyze, testConnection };
+const REPLY_SYSTEM = [
+  '你帮人在 X 上回帖。用户看到一条帖子或评论，不知道回什么；你写出来的东西要像真人在手机上一秒打出来的，不是在写文案。',
+  '先判断这条帖子/评论是什么：吐槽、求助、提问、分享、炫耀、观点争论、报喜、emo。回复只做一件事：接梗、附和、追问、说一句自己类似的经历，或对方在求助时给一个具体做法。别答非所问，别总结原帖，别把话说满。',
+  '用原帖的语言：中文帖子用中文口语；英文帖子用全英文口语，不要混中文；中英混杂就以中文为主。',
+  '长度：1 句，最多 2 句。中文一般 5 到 40 个字，可以只有半句话；英文 3 到 15 个单词。允许不加句号、用空格断句、省略主语。别解释理由，别铺垫，别说“我理解你的感受”这种话。',
+  '语气像在群里回朋友：可以损、可以吐槽、可以只回一个反应。别过度热情，别每条都夸，别三条都提问，别三条都“哈哈”开头。',
+  '去 AI 味（硬性）：不要出现“总的来说、值得注意的是、首先/其次/综上、此外、不得不说、确实如此、换句话说、不难发现、希望对你有所帮助、让我们一起、作为一个、从这个角度”这些词；不用破折号和分号；不排比、不列清单、不写 hashtag、不引用原帖句子、不自称 AI、不解释你写这条的原因。',
+  '不要编造用户没有的经历、身份、数据或承诺；不确定就别装懂，用提问代替断言。',
+  '三条回复的角度和长短要不一样；第一条要短（不超过 12 个汉字或 6 个英文词）；三条开头不能一样。',
+  '示例 1（吐槽）：帖子“新买的键盘三天键帽就打油了，这正常吗”→ {"tone":"接梗","text":"三天就油 这手速能去电竞了"}、{"tone":"共鸣","text":"正常 我的也油 已经懒得管"}、{"tone":"追问","text":"什么轴的 我下次避开"}',
+  '示例 2（求助）：帖子“有没有办法自动整理客户反馈”→ {"tone":"认真建议","text":"先定个固定格式 别一上来就上系统"}、{"tone":"追问","text":"大概多少条 量不大手动也能撑"}、{"tone":"补一句","text":"这种事最容易越理越乱"}',
+  '示例 3（英文）：post “finally shipped my side project after 2 years”→ {"tone":"react","text":"two years, respect"}、{"tone":"ask","text":"whats the stack"}、{"tone":"relate","text":"shipping is the hard part tbh"}',
+  '只输出这个 JSON，不要任何其他文字：{"replies":[{"tone":"2到4个字","text":"..."}]}'
+].join('\n');
+
+// A one-line reaction is where low temperature hurts most, so reply suggestions
+// always sample at least this warm instead of reusing the analysis setting.
+const REPLY_TEMPERATURE = 0.85;
+const REPLY_REWRITE = '上一版太像 AI 写的：有套话，或者句子太工整。重写 3 条：更短、更像手机随手打的，别用任何套话词，别每条都写成完整句子，别解释理由。只输出 JSON。';
+
+async function suggestReplies(settings, post, fetchImpl = fetch) {
+  const tuned = { ...settings, temperature: Math.max(Number(settings.temperature) || 0, REPLY_TEMPERATURE) };
+  const payload = { post: { author: post.authorHandle ? '@' + post.authorHandle : '', text: post.text } };
+  const base = [
+    { role: 'system', content: REPLY_SYSTEM },
+    { role: 'user', content: JSON.stringify(payload) }
+  ];
+  const first = reply.validate(opportunity.parseAI(await requestChat(tuned, base, 900, fetchImpl))).replies;
+  if (!reply.looksTemplated(first)) return first;
+  // One automatic rewrite when the model still produced clichés. If the retry
+  // fails validation, keep the usable first batch instead of erroring out.
+  try {
+    return reply.validate(opportunity.parseAI(await requestChat(tuned, [
+      ...base,
+      { role: 'assistant', content: JSON.stringify({ replies: first }) },
+      { role: 'user', content: REPLY_REWRITE }
+    ], 900, fetchImpl))).replies;
+  } catch {
+    return first;
+  }
+}
+
+module.exports = { endpointOf, originPattern, requestChat, analyze, testConnection, suggestReplies };
+
+},
+"shared/reply": function(require, module, exports) {
+'use strict';
+// Reply suggestions: validate AI output into short, copy-ready human replies.
+
+const MAX_REPLIES = 4;
+const MAX_LENGTH = 280;
+
+function collapse(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function cleanText(value) {
+  let text = collapse(value)
+    .replace(/[*_`#>]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^["“「『]/.test(text) && /["”」』]$/.test(text)) text = text.slice(1, -1).trim();
+  return text;
+}
+
+function cleanTone(value) {
+  const tone = cleanText(value).replace(/[：:].*$/, '').trim();
+  return tone.slice(0, 10) || '回复';
+}
+
+function validate(parsed) {
+  if (!parsed || !Array.isArray(parsed.replies) || parsed.replies.length < 1 || parsed.replies.length > MAX_REPLIES) {
+    throw new Error('AI 返回的回复数量无效');
+  }
+  const seen = new Set(), replies = [];
+  for (const raw of parsed.replies) {
+    if (typeof raw?.text !== 'string') throw new Error('AI 回复缺少文本');
+    const text = cleanText(raw.text);
+    if (text.length < 2 || text.length > MAX_LENGTH) throw new Error('AI 回复长度无效');
+    if (/https?:\/\//i.test(text)) throw new Error('AI 回复不应包含链接');
+    if (/[\p{Script=Han}]/u.test(text) && text.length > 160) throw new Error('AI 回复过长，不像随手回复');
+    const key = text.replace(/[\s\p{P}\p{S}]+/gu, '').toLocaleLowerCase();
+    if (!key || seen.has(key)) throw new Error('AI 返回了重复的回复');
+    seen.add(key);
+    replies.push({ tone: cleanTone(raw.tone), text });
+  }
+  return { replies };
+}
+
+// Phrases that immediately make a reply read like machine-written copy.
+// Validation stays soft (a reply is still usable); ai-client triggers one rewrite
+// when any of these slips through.
+const TEMPLATE = /总的来说|值得注意|首先|其次|综上|此外|不得不说|确实如此|换句话说|不难发现|希望(?:对你|能)有(?:所)?帮助|让我们一起|作为一个|从这个角度|需要指出|需要注意的是|——/;
+const TEMPLATE_EN = /\bas an ai\b|\bi hope this helps\b|\bfeel free to\b|\bhere are\b/i;
+
+function looksTemplated(replies) {
+  if (!Array.isArray(replies) || !replies.length) return false;
+  if (replies.some(x => TEMPLATE.test(x.text) || TEMPLATE_EN.test(x.text))) return true;
+  // All long and fully punctuated: written language, not a one-second phone reply.
+  return replies.length >= 2 && replies.every(x => x.text.length > 25 && /[。！]$/.test(x.text));
+}
+
+module.exports = { validate, cleanText, looksTemplated, MAX_REPLIES, MAX_LENGTH };
 
 },
 "shared/core": function(require, module, exports) {

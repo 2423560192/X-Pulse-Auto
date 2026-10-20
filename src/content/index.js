@@ -12,6 +12,7 @@ const handle = require('../shared/handle.js');
 const favorites = require('../shared/favorites.js');
 const dom = require('./dom.js');
 const createOpportunityUI = require('./opportunity-ui.js');
+const createReplyUI = require('./reply-ui.js');
 const createTooltip = require('./tooltip.js');
 const createBadge = require('./badge.js');
 const createLayout = require('./layout.js');
@@ -58,6 +59,7 @@ const badge = createBadge({ state, presentation, tooltip, el: dom.el });
 const layout = createLayout({ state, handle, store, badge, tooltip, el: dom.el });
 const diagnostics = createDiagnostics({ state, version, el: dom.el });
 const opportunityUI = createOpportunityUI({ state, el: dom.el });
+const replyUI = createReplyUI({ state, el: dom.el });
 
 function schedule() {
   if (state.initialized && !state.timer) state.timer = setTimeout(render, 120);
@@ -80,6 +82,7 @@ function render() {
       document.querySelectorAll('[data-testid="UserCell"]').forEach(cell => layout.reconcile(cell, layout.cellAnchor(cell), true));
     }
     opportunityUI.render();
+    replyUI.render();
     diagnostics.updateHud();
   } catch (error) {
     state.stats.lastError = '页面渲染：' + String(error.message || error).slice(0, 160);

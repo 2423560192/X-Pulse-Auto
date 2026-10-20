@@ -60,6 +60,12 @@ async function dispatchOpportunity(action, payload) {
     case 'addToPool': return opportunities.addToPool(payload.id);
     case 'update': return opportunities.update(payload.id, payload.patch || {});
     case 'remove': return opportunities.remove(payload.id);
+    case 'reply': {
+      const { ai } = await opportunities.ready();
+      const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
+      if (!granted) throw new Error('AI 服务域名权限已失效，请重新测试连接');
+      return opportunities.suggestReplies(payload.post, !!payload.force);
+    }
     case 'analyze': {
       const { ai } = await opportunities.ready();
       const granted = await chrome.permissions.contains({ origins: [aiClient.originPattern(ai.baseUrl)] });
@@ -73,7 +79,7 @@ async function dispatchOpportunity(action, payload) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== 'xp-opportunity') return undefined;
   const task = () => dispatchOpportunity(message.action, message.payload || {});
-  const p = ['saveAI', 'testAI', 'addToPool', 'update', 'remove', 'analyze'].includes(message.action) ? enqueue(task) : task();
+  const p = ['saveAI', 'testAI', 'addToPool', 'update', 'remove', 'analyze', 'reply'].includes(message.action) ? enqueue(task) : task();
   p.then(result => sendResponse({ ok: true, result }))
     .catch(err => sendResponse({ ok: false, error: String((err && err.message) || err) }));
   return true;
